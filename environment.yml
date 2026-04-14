@@ -1,0 +1,57 @@
+## Trained model
+
+The final trained model is `fused_rep666_stack.pth`.
+
+Due to file size limitations, the model file may not be included directly in this repository.
+Please prepare the checkpoint manually if needed.
+
+## Environment
+
+This project was developed and tested in a manually assembled runtime environment, mainly based on ESM / ESMFold-related dependencies, rather than a single clean standalone Conda environment.
+
+### Tested runtime
+- Python: 3.11.11
+- PyTorch: 2.2.1+cu121
+- CUDA: 12.1
+
+### Core Python packages
+- h5py 3.15.1
+- pandas 2.3.3
+- numpy 1.26.4
+- tqdm 4.67.1
+- scikit-learn 1.6.1
+- matplotlib 3.10.0
+- biopython 1.83
+
+### Notes
+- The actual runtime was assembled from existing ESM / ESMFold-related environments.
+- Therefore, exporting a single clean Conda environment may not fully reproduce the original setup.
+- Reproduction is recommended by manually installing the core dependencies listed above.
+- Some pretrained model files are loaded from local offline paths and need to be prepared manually before running the scripts.
+
+
+# Deep-Palm
+
+## 项目简介
+本项目用于 xxx。
+
+## 文件说明
+- `train.py`：主训练脚本
+- `input/aaindex1.txt`：AAindex 特征文件
+- `input/esm_input.csv`：输入序列文件
+- `input/esm2_embedding.py`：ESM2 embedding 提取脚本
+- `input/esm2结构.py`：ESMFold 结构生成脚本
+
+## 环境说明
+（把上面的环境部分贴进来）
+
+## 数据准备
+将输入文件放在 `input/` 目录下。
+
+## 运行方式
+```bash
+python train.py
+
+- Some scripts depend on locally stored offline ESM / ESMFold pretrained weights.
+- These model files are not included in this repository.
+- Please download the required checkpoints manually and place them at the paths specified in the scripts before running.
