@@ -31,10 +31,6 @@ This project was developed and tested in a manually assembled runtime environmen
 
 
 # Deep-Palm
-
-## 项目简介
-本项目用于 xxx。
-
 ## 文件说明
 - `train.py`：主训练脚本
 - `input/aaindex1.txt`：AAindex 特征文件
