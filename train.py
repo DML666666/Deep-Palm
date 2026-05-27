@@ -63,7 +63,7 @@ CONFIG: Dict = {
     'ESM_H5':   'embedding.h5',
     'OUT_DIR':  'output',
     'MODEL_DIR': 'models',
-    'SPECIES_CSV':'uniprotid-物种.csv',
+    'SPECIES_CSV':'uniprotid_species.csv',
     'SPECIES_MIN_SAMPLES': 100,
                                     
     'PDB_DIR': 'esmfold.pdb',

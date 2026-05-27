@@ -1,5 +1,5 @@
-
-
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
 import os
 import os.path as p
@@ -12,36 +12,29 @@ import multiprocessing as mp
 import torch
 from esm import pretrained
 
-
-
-INPUT_CSV = r"/esm_input.csv"
-
-
+INPUT_CSV = r"/input.csv"
 OUTPUT_DIR = r"/esmfold.pdb"
-
-
 NUM_WORKERS = 4
 
 
-
-
+# ---- 工具：把列表平均拆成 n 份 ----
 def chunk_list(lst, n):
     n = max(1, min(n, len(lst)))
     k = int(math.ceil(len(lst) / float(n)))
     return [lst[i * k:(i + 1) * k] for i in range(n) if lst[i * k:(i + 1) * k]]
 
 
-
+# ---- 子进程执行函数 ----
 def worker_proc(worker_id, rows_chunk, id_col, seq_col, total_rows):
-
+   
     torch.set_grad_enabled(False)
 
     print(f"[Worker {worker_id}] start, {len(rows_chunk)} rows")
 
-
+    # 每个进程各自加载一份模型
     model = pretrained.esmfold_v1()
     if torch.cuda.is_available():
-        torch.cuda.set_device(0)
+        torch.cuda.set_device(0)  # 只有一张卡的话固定到 0
         model = model.cuda()
     model.eval()
 
@@ -55,7 +48,6 @@ def worker_proc(worker_id, rows_chunk, id_col, seq_col, total_rows):
 
         out_path = p.join(OUTPUT_DIR, f"{uid}.pdb")
         if p.exists(out_path):
-
             continue
 
         print(
@@ -89,7 +81,6 @@ def main():
     print("Input CSV :", INPUT_CSV)
     print("Output dir:", OUTPUT_DIR)
 
-
     if not p.exists(INPUT_CSV):
         print("[ERROR] 找不到输入 CSV:", INPUT_CSV)
         sys.exit(1)
@@ -98,7 +89,6 @@ def main():
 
 
     print("[1/3] Loading CSV ...")
-
 
     with open(INPUT_CSV, "r", encoding="utf-8-sig", newline="") as f:
         reader = csv.DictReader(f)
@@ -135,7 +125,6 @@ def main():
         print("[WARN] CSV 没有数据行。")
         return
 
-
     todo_rows = []
     for r in rows:
         uid = (r.get(id_col) or "").strip()
@@ -152,7 +141,6 @@ def main():
 
     print(f"[INFO] 需要实际折叠的条目数: {len(todo_rows)}")
 
-
     chunks = chunk_list(todo_rows, NUM_WORKERS)
     print(f"[2/3] Using {len(chunks)} workers, "
           f"each ~{len(todo_rows) // len(chunks)} rows")
@@ -167,7 +155,7 @@ def main():
         p_proc.start()
         procs.append(p_proc)
 
-
+ 
     for p_proc in procs:
         p_proc.join()
 
@@ -175,10 +163,9 @@ def main():
 
 
 if __name__ == "__main__":
-
     try:
         mp.set_start_method("spawn")
     except RuntimeError:
-
+        # 已经设置过就忽略
         pass
     main()

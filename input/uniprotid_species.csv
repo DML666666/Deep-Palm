@@ -22,7 +22,7 @@ P52825-489,Mus musculus
 P20334-87,Mus musculus
 Q9Z2G0-465,Mus musculus
 Q15012-19,Homo sapiens
-E2IUK4-198,Sus scrofa
+P19637-234,Rattus norvegicus
 D3Z106-310,Mus musculus
 P41950-329,Caenorhabditis elegans
 Q54C31-570,Dictyostelium discoideum
@@ -62,9 +62,9 @@ Q8JZN7-216,Mus musculus
 P63104-94,Homo sapiens
 G3V511-1595,Homo sapiens
 P09668-327,Homo sapiens
-P22004-445,Homo sapiens
+P0C991-234,African swine fever virus
 Q9W3Y1-196,Drosophila melanogaster
-Q30NP4-693,Influenza A virus
+O55058-39,Cricetulus griseus
 A0A7H0DMZ9-421,Monkeypox virus
 O83735-162,Treponema pallidum
 O57220-125,Vaccinia virus
@@ -120,7 +120,7 @@ P20489-131,Mus musculus
 Q8R2Y2-274,Mus musculus
 P11716-3170,Oryctolagus cuniculus
 Q80T14-614,Mus musculus
-B2RVL6-192,Mus musculus
+P00889-202,Sus scrofa
 P0DN93-109,Arabidopsis thaliana
 Q9Z2T6-21,Mus musculus
 Q9ESB3-89,Mus musculus
@@ -296,7 +296,7 @@ Q68801-625,Hepatitis C virus genotype 3k
 Q2V2S1-37,Arabidopsis thaliana
 Q80XN0-115,Mus musculus
 P01868-302,Mus musculus
-O77708-116,Oryctolagus cuniculus
+Q62520-258,Mus musculus
 P29699-114,Mus musculus
 Q9ULJ3-780,Homo sapiens
 Q54J88-588,Dictyostelium discoideum
@@ -318,7 +318,7 @@ Q869R1-317,Dictyostelium discoideum
 P61769-45,Homo sapiens
 Q9R0P9-90,Mus musculus
 Q09388-577,Caenorhabditis elegans
-Q2RCG9-693,Influenza A virus
+Q9VUV9-336,Drosophila melanogaster
 P06795-1225,Mus musculus
 Q8WUA7-434,Homo sapiens
 Q8CFJ7-245,Mus musculus
@@ -347,7 +347,7 @@ O15127-127,Homo sapiens
 P78527-223,Homo sapiens
 P56716-1234,Mus musculus
 Q61292-1108,Mus musculus
-Q9NXR8-363,Homo sapiens
+Q9UIL8-197,Homo sapiens
 P34715-303,Trypanosoma cruzi
 Q9D0G0-143,Mus musculus
 P12392-152,Rattus norvegicus
@@ -417,7 +417,7 @@ P51809-183,Homo sapiens
 P35505-315,Mus musculus
 Q8TEY7-664,Homo sapiens
 Q8CIF6-430,Mus musculus
-Q8V437-307,Bovine coronavirus
+Q9FFI0-384,Arabidopsis thaliana
 P39087-871,Mus musculus
 Q9DBC0-485,Mus musculus
 Q7KWT9-136,Dictyostelium discoideum
@@ -499,7 +499,7 @@ P16563-196,Mus musculus
 Q9W0A0-756,Drosophila melanogaster
 Q5ZK92-217,Gallus gallus
 O14763-113,Homo sapiens
-Q12501-1428,Saccharomyces cerevisiae
+O97439-247,Giardia intestinalis
 Q9CQ21-113,Mus musculus
 Q9Z0L0-329,Mus musculus
 Q9GZX9-175,Homo sapiens
@@ -557,7 +557,7 @@ P03159-340,Hepatitis B virus genotype A2 subtype adw2
 A0A0U1RRM8-276,Homo sapiens
 P36578-96,Homo sapiens
 Q96NT5-21,Homo sapiens
-P31349-447,Influenza A virus
+P0C6X5-4271,Human coronavirus NL63
 P10247-236,Rattus norvegicus
 P33267-180,Mus musculus
 B4HR35-123,Drosophila sechellia
@@ -599,7 +599,7 @@ Q8BY46-128,Mus musculus
 Q8C963-309,Mus musculus
 Q4V3D2-388,Arabidopsis thaliana
 Q96N67-655,Homo sapiens
-P97607-203,Rattus norvegicus
+P0DJX7-45,Encephalomyocarditis virus
 B1AUC7-230,Mus musculus
 P11716-2021,Oryctolagus cuniculus
 P34897-91,Homo sapiens
@@ -650,7 +650,7 @@ Q9Z1L1-186,Rattus norvegicus
 P21849-525,Giardia intestinalis
 Q99JY9-189,Mus musculus
 P30408-107,Homo sapiens
-P28885-454,Parainfluenza virus 5
+Q9H175-228,Homo sapiens
 Q497V5-757,Mus musculus
 Q99L47-208,Mus musculus
 P06814-23,Oryctolagus cuniculus
@@ -755,7 +755,7 @@ Q9JI18-3628,Mus musculus
 P14824-114,Mus musculus
 Q18823-435,Caenorhabditis elegans
 Q9DC50-107,Mus musculus
-P0CS82-390,Saccharomyces cerevisiae
+O88839-444,Mus musculus
 P48023-82,Homo sapiens
 Q60759-289,Mus musculus
 P53811-187,Mus musculus
@@ -790,8 +790,8 @@ Q6ZNB6-396,Homo sapiens
 Q8CG65-4227,Mus musculus
 O43175-369,Homo sapiens
 Q68SA9-1487,Mus musculus
-Q910D6-610,Influenza A virus
-P79281-89,Sus scrofa
+Q8R4K8-471,Mus musculus
+P09760-797,Rattus norvegicus
 A0A0G2JJZ9-139,Homo sapiens
 P22934-102,Rattus norvegicus
 Q55DJ8-507,Dictyostelium discoideum
@@ -810,13 +810,13 @@ Q9FMS4-57,Arabidopsis thaliana
 Q02789-944,Mus musculus
 P60866-36,Homo sapiens
 P45844-394,Homo sapiens
-Q77TH8-66,Vaccinia virus
+P97443-74,Mus musculus
 P16144-749,Homo sapiens
 C3VD30-26,Mus musculus
 Q6NS52-766,Mus musculus
 P04850-454,Parainfluenza virus 5
 Q09884-915,Schizosaccharomyces pombe
-Q5XX01-2169,Sudan ebolavirus
+B3SRS0-72,Rotavirus A
 Q6P4U0-97,Mus musculus
 P50431-198,Mus musculus
 Q8R0Y6-587,Mus musculus
@@ -931,11 +931,11 @@ P17427-171,Mus musculus
 Q03350-876,Mus musculus
 Q8MJ47-157,Canis lupus familiaris
 O08999-1764,Mus musculus
-P69256-104,Influenza B virus
+Q02817-4581,Homo sapiens
 Q8N608-465,Homo sapiens
 P62956-224,Mus musculus
 Q27433-140,Caenorhabditis elegans
-A7Z061-572,Bos taurus
+Q9QZG1-430,Rattus norvegicus
 P40142-386,Mus musculus
 Q6WQJ1-318,Mus musculus
 Q9CXN7-24,Mus musculus
@@ -950,7 +950,7 @@ P22273-441,Rattus norvegicus
 Q9WVH8-131,Rattus norvegicus
 Q9JLI8-487,Mus musculus
 Q02395-204,Mus musculus
-Q708S3-283,Danio rerio
+P16056-544,Mus musculus
 O75925-402,Homo sapiens
 Q6Q473-268,Mus musculus
 P03140-222,Hepatitis B virus genotype C subtype ad
@@ -1049,8 +1049,8 @@ Q9Y210-255,Homo sapiens
 Q8R1B4-441,Mus musculus
 Q8JSP8-578,Porcine hemagglutinating encephalomyelitis virus
 P47911-51,Mus musculus
-P23458-189,Homo sapiens
-Q9PW71-225,Gallus gallus
+Q8IYH5-823,Homo sapiens
+P28883-185,Parainfluenza virus 5
 Q91X72-230,Mus musculus
 Q925Q3-123,Mus musculus
 Q7TNG8-251,Mus musculus
@@ -1077,7 +1077,7 @@ Q8TAA9-107,Homo sapiens
 Q91WG8-520,Mus musculus
 Q9CYV5-234,Mus musculus
 P25776-402,Oryza sativa subsp. japonica
-A6QLA0-420,Bos taurus
+Q9U7D5-138,Caenorhabditis elegans
 Q27237-227,Drosophila melanogaster
 P29474-1009,Homo sapiens
 Q55GA8-45,Dictyostelium discoideum
@@ -1163,7 +1163,7 @@ A6NLI5-446,Homo sapiens
 Q8AYM8-187,Danio rerio
 O93308-556,Xenopus laevis
 Q1LZ53-520,Rattus norvegicus
-P03141-243,Hepatitis B virus genotype A2 subtype adw2
+Q753Q4-739,Eremothecium gossypii
 G5E9R5-18,Homo sapiens
 Q8VDZ4-237,Mus musculus
 P24549-186,Mus musculus
@@ -1299,7 +1299,7 @@ P17987-357,Homo sapiens
 Q9H6R7-507,Homo sapiens
 Q68FE7-530,Mus musculus
 E7F240-109,Danio rerio
-P0CX68-89,Saccharomyces cerevisiae
+Q9UKF5-551,Homo sapiens
 P05388-27,Homo sapiens
 O88799-4377,Mus musculus
 P11716-2565,Oryctolagus cuniculus
@@ -1316,7 +1316,7 @@ P01375-49,Homo sapiens
 Q9BVA1-239,Homo sapiens
 Q92673-1344,Homo sapiens
 Q64281-98,Mus musculus
-D3ZVR1-22,Rattus norvegicus
+Q8S3U9-606,Arabidopsis thaliana
 P38109-336,Saccharomyces cerevisiae
 P07901-375,Mus musculus
 Q00960-871,Rattus norvegicus
@@ -1502,7 +1502,7 @@ P13639-466,Homo sapiens
 Q4LDG0-370,Mus musculus
 O13798-1047,Schizosaccharomyces pombe
 Q8TAU3-354,Homo sapiens
-Q54BF5-264,Dictyostelium discoideum
+P17887-1269,Human herpesvirus 6A
 P05549-14,Homo sapiens
 Q8VC12-265,Mus musculus
 Q9U2Q9-8,Caenorhabditis elegans
@@ -1519,7 +1519,7 @@ A8DYP0-3791,Drosophila melanogaster
 Q14524-1176,Homo sapiens
 Q8H1G0-226,Arabidopsis thaliana
 Q5XIL2-170,Rattus norvegicus
-P0C6W8-1341,Bovine coronavirus
+Q6KAS7-891,Mus musculus
 P38551-121,Sus scrofa
 P05689-215,Bos taurus
 Q3TWN3-399,Mus musculus
@@ -1641,7 +1641,7 @@ Q22271-409,Caenorhabditis elegans
 Q64516-67,Mus musculus
 Q99LJ5-106,Mus musculus
 Q96P20-415,Homo sapiens
-Q95209-1343,Oryctolagus cuniculus
+Q4A3R3-726,Sus scrofa
 Q3L254-152,Gallus gallus
 L7N244-70,Mus musculus
 Q23835-382,Drosophila ananassae
@@ -1706,7 +1706,7 @@ A6NIJ9-95,Homo sapiens
 B1AR13-81,Mus musculus
 P28665-251,Mus musculus
 Q54C31-630,Dictyostelium discoideum
-Q61092-464,Mus musculus
+Q9N2V9-654,Caenorhabditis elegans
 D0EZM8-116,Primate bocaparvovirus 1
 Q96NZ8-114,Homo sapiens
 O14116-624,Schizosaccharomyces pombe
@@ -1822,7 +1822,7 @@ Q9USK8-251,Schizosaccharomyces pombe
 Q923B6-156,Mus musculus
 Q61211-446,Mus musculus
 Q80U23-61,Mus musculus
-Q71M36-399,Mus musculus
+Q4A3R3-331,Sus scrofa
 Q9D6G9-92,Mus musculus
 Q9NR16-789,Homo sapiens
 Q8BGT5-476,Mus musculus
@@ -1856,7 +1856,7 @@ Q5TA79-16,Homo sapiens
 P10041-544,Drosophila melanogaster
 Q02890-168,Saccharomyces cerevisiae
 Q15858-1562,Homo sapiens
-A7E369-58,Bos taurus
+P05083-30,Gallus gallus
 Q98867-100,Danio rerio
 O35453-109,Mus musculus
 O70589-698,Mus musculus
@@ -1879,7 +1879,7 @@ Q94BR5-699,Arabidopsis thaliana
 Q6NZL8-213,Mus musculus
 O43854-158,Homo sapiens
 Q61586-812,Mus musculus
-P0CX70-89,Saccharomyces cerevisiae
+Q02445-174,Rattus norvegicus
 P0DUN4-28,Bothrops brazili
 P00533-797,Homo sapiens
 Q5VVY1-22,Homo sapiens
@@ -2027,11 +2027,11 @@ H3BQF1-83,Homo sapiens
 O70475-241,Mus musculus
 P51152-208,Canis lupus familiaris
 Q7RTV0-23,Homo sapiens
-Q66165-307,Bovine coronavirus
+P48448-219,Homo sapiens
 Q8IWX8-168,Homo sapiens
 Q3UVU3-167,Mus musculus
 P49327-1141,Homo sapiens
-P0CX21-624,Saccharomyces cerevisiae
+O35954-188,Mus musculus
 Q6ZNB6-589,Homo sapiens
 Q9BTU6-175,Homo sapiens
 P14209-154,Homo sapiens
@@ -2168,7 +2168,7 @@ P63017-17,Mus musculus
 Q9DCM0-34,Mus musculus
 O15118-800,Homo sapiens
 P38720-365,Saccharomyces cerevisiae
-O41178-54,Rotavirus A
+Q7TSQ8-515,Mus musculus
 E9Q6G4-1229,Mus musculus
 Q9JKZ2-662,Mus musculus
 A5WWA0-734,Danio rerio
@@ -2239,7 +2239,7 @@ P18688-551,Oryctolagus cuniculus
 Q8CIE6-1013,Mus musculus
 A8MQA4-58,Arabidopsis thaliana
 Q64310-32,Mus musculus
-Q9Z1M9-556,Rattus norvegicus
+Q40374-122,Medicago truncatula
 Q7TPR4-180,Mus musculus
 Q62850-135,Rattus norvegicus
 A8MVA2-19,Homo sapiens
@@ -2255,7 +2255,7 @@ Q3U9N9-126,Mus musculus
 Q9JLJ2-267,Mus musculus
 P09564-198,Homo sapiens
 Q9DBN5-137,Mus musculus
-Q809M7-610,Influenza A virus
+Q9C6H5-124,Arabidopsis thaliana
 P53996-54,Mus musculus
 P17790-306,Gallus gallus
 P13639-751,Homo sapiens
@@ -2289,14 +2289,14 @@ P11716-2555,Oryctolagus cuniculus
 Q9DCM0-80,Mus musculus
 Q5ZKI0-116,Gallus gallus
 Q8C181-53,Mus musculus
-Q3TTA7-411,Mus musculus
+Q8K4G1-1095,Mus musculus
 P62908-119,Mus musculus
 Q8JZR0-259,Mus musculus
 P54869-261,Mus musculus
 A4GCL6-610,Influenza A virus
 Q61176-168,Mus musculus
 P16671-243,Homo sapiens
-Q2LFV4-253,Influenza A virus
+A6ZQG3-34,Saccharomyces cerevisiae
 D3YY75-103,Mus musculus
 Q7M334-144,Oryctolagus cuniculus
 O82328-78,Arabidopsis thaliana
@@ -2337,7 +2337,7 @@ Q93045-24,Homo sapiens
 Q8K3F6-256,Mus musculus
 P48453-237,Mus musculus
 C9J841-125,Homo sapiens
-Q8WU90-198,Homo sapiens
+Q9BW27-35,Homo sapiens
 Q00839-497,Homo sapiens
 O95047-240,Homo sapiens
 P24588-36,Homo sapiens
@@ -2386,7 +2386,7 @@ Q5Y5T5-245,Mus musculus
 O14744-22,Homo sapiens
 Q9Y2B1-338,Homo sapiens
 Q8T2A1-757,Dictyostelium discoideum
-P31422-534,Rattus norvegicus
+Q9VXE0-49,Drosophila melanogaster
 A2CEK3-119,Mus musculus
 Q9QZB1-67,Mus musculus
 Q60700-127,Mus musculus
@@ -2432,7 +2432,7 @@ Q5RKR3-533,Mus musculus
 D3YVF0-123,Mus musculus
 Q9S9P0-595,Arabidopsis thaliana
 Q80TN5-590,Mus musculus
-P79331-511,Bos taurus
+Q6UWN5-156,Homo sapiens
 P23977-580,Rattus norvegicus
 Q75M35-793,Oryza sativa subsp. japonica
 Q5RJI2-427,Mus musculus
@@ -2481,7 +2481,7 @@ Q9ZVI6-58,Arabidopsis thaliana
 Q99PL5-1136,Mus musculus
 P0C6T8-4351,Bovine coronavirus
 P97946-278,Mus musculus
-P19756-112,Sus scrofa
+K9N5Q8-1164,Middle East respiratory syndrome-related coronavirus
 O08917-17,Mus musculus
 Q8VE18-566,Mus musculus
 Q91W98-30,Mus musculus
@@ -2584,8 +2584,8 @@ P98164-4399,Homo sapiens
 Q6H7M1-150,Oryza sativa subsp. japonica
 Q9NX77-108,Homo sapiens
 Q9UPY5-327,Homo sapiens
-Q61554-1244,Mus musculus
-P36873-158,Homo sapiens
+P02469-531,Mus musculus
+P08292-195,Coxsackievirus B4
 Q8R0Y6-762,Mus musculus
 P08255-323,Drosophila melanogaster
 Q5ZKA2-975,Gallus gallus
@@ -2602,22 +2602,22 @@ Q9WVF7-2167,Mus musculus
 O75376-662,Homo sapiens
 Q6PF96-326,Mus musculus
 Q3UHK1-303,Mus musculus
-P24062-1238,Rattus norvegicus
+P34425-76,Caenorhabditis elegans
 A2AQR0-84,Mus musculus
 Q9NXP7-254,Homo sapiens
 Q8BTZ7-149,Mus musculus
 Q9BYU5-89,Homo sapiens
 Q9UK96-49,Homo sapiens
-Q9WTU3-1567,Mus musculus
+Q59H18-413,Homo sapiens
 Q8NHU3-331,Homo sapiens
 Q3UNX5-2-134,Mus musculus
 Q02257-90,Mus musculus
-Q65164-181,African swine fever virus
+Q5BK68-376,Rattus norvegicus
 O88799-2437,Mus musculus
-Q9QYK4-205,Mus musculus
+Q059Y8-691,Mus musculus
 Q3MII6-354,Homo sapiens
 G5E8G3-244,Mus musculus
-F1MSG6-225,Bos taurus
+A1ZA47-2171,Drosophila melanogaster
 P0C9J3-85,African swine fever virus
 P53675-1102,Homo sapiens
 O08749-484,Mus musculus
@@ -2646,7 +2646,7 @@ P23685-770,Canis lupus familiaris
 Q80XN0-63,Mus musculus
 Q64326-253,Mus musculus
 Q497N7-107,Mus musculus
-P38324-246,Saccharomyces cerevisiae
+Q9UTL5-291,Schizosaccharomyces pombe
 Q9CRT8-38,Mus musculus
 O15162-149,Homo sapiens
 Q01643-68,Drosophila melanogaster
@@ -2683,7 +2683,7 @@ Q94K43-399,Arabidopsis thaliana
 P26443-172,Mus musculus
 Q921I1-526,Mus musculus
 Q8IVV2-1127,Homo sapiens
-Q8R493-152,Mus musculus
+Q9P7H8-649,Schizosaccharomyces pombe
 Q80YQ1-520,Mus musculus
 P98164-4401,Homo sapiens
 Q3UEG6-316,Mus musculus
@@ -2777,7 +2777,7 @@ P16460-97,Mus musculus
 P27037-60,Homo sapiens
 P35700-173,Mus musculus
 O89112-183,Mus musculus
-Q55FW5-265,Dictyostelium discoideum
+P48745-295,Homo sapiens
 Q58G35-186,Arabidopsis thaliana
 P16546-1930,Mus musculus
 P62717-109,Mus musculus
@@ -2809,7 +2809,7 @@ Q9JIF7-466,Mus musculus
 B7ZRT8-292,Xenopus laevis
 P56705-215,Homo sapiens
 P55067-1212,Rattus norvegicus
-Q8MKF0-298,Bos taurus
+Q92832-657,Homo sapiens
 Q9CQJ8-103,Mus musculus
 Q06561-2147,Caenorhabditis elegans
 Q64514-150,Mus musculus
@@ -2876,7 +2876,7 @@ Q98UI9-1094,Gallus gallus
 P01322-109,Rattus norvegicus
 Q8BJ64-165,Mus musculus
 Q9H6X2-347,Homo sapiens
-P20895-173,Human respiratory syncytial virus
+P00748-61,Homo sapiens
 P02462-1460,Homo sapiens
 Q98T89-186,Gallus gallus
 F7C3A0-1102,Mus musculus
@@ -2904,7 +2904,7 @@ Q5PQS4-125,Rattus norvegicus
 Q21241-28,Caenorhabditis elegans
 Q8VHL5-51,Mus musculus
 Q14524-981,Homo sapiens
-Q8V0N6-587,Human hepatitis A virus genotype IIB)
+P39877-64,Homo sapiens
 Q9ERZ3-562,Mus musculus
 O92972-226,Hepatitis C virus genotype 1b
 Q6DCT3-298,Xenopus laevis
@@ -2941,7 +2941,7 @@ Q68FE2-122,Mus musculus
 O92955-265,Rous sarcoma virus subgroup B
 Q91X72-199,Mus musculus
 O14099-351,Schizosaccharomyces pombe
-Q07793-89,Saccharomyces cerevisiae
+Q9PWA0-40,Gallus gallus
 Q9DCL9-281,Mus musculus
 Q9HCF6-74,Homo sapiens
 P63244-182,Homo sapiens
@@ -2990,7 +2990,7 @@ Q5TDH0-7,Homo sapiens
 D3YUM1-133,Mus musculus
 Q9EQ20-368,Mus musculus
 Q8R0F8-132,Mus musculus
-P21404-1390,Coxsackievirus A9
+Q9BYV9-581,Homo sapiens
 Q13433-719,Homo sapiens
 P29279-120,Homo sapiens
 P56704-77,Homo sapiens
@@ -3145,7 +3145,7 @@ Q9CXT8-419,Mus musculus
 Q0WNZ5-697,Arabidopsis thaliana
 O15230-1334,Homo sapiens
 O65312-473,Arabidopsis thaliana
-Q9UL51-378,Homo sapiens
+Q07954-2865,Homo sapiens
 Q54C32-381,Dictyostelium discoideum
 Q8LC69-142,Arabidopsis thaliana
 B9A014-73,Homo sapiens
@@ -3218,7 +3218,7 @@ P31283-122,Xenopus laevis
 P34888-234,Caenorhabditis elegans
 Q18336-232,Caenorhabditis elegans
 J3QMI4-200,Mus musculus
-P0CX63-112,Saccharomyces cerevisiae
+Q9VU08-1327,Drosophila melanogaster
 P04015-124,Human papillomavirus 11
 Q8C129-103,Mus musculus
 Q9LFL7-4,Arabidopsis thaliana
@@ -3343,7 +3343,7 @@ G5EC36-147,Caenorhabditis elegans
 O75712-60,Homo sapiens
 Q6GUG4-302,Rattus norvegicus
 P13707-329,Mus musculus
-Q9DG02-115,Xenopus laevis
+Q9NYQ6-1307,Homo sapiens
 P21183-152,Mus musculus
 P08249-89,Mus musculus
 P22726-341,Mus musculus
@@ -3403,13 +3403,13 @@ Q80X76-371,Mus musculus
 Q9R0I6-473,Rattus norvegicus
 D4A523-38,Rattus norvegicus
 O43390-292,Homo sapiens
-Q9WAA1-271,Influenza A virus
+Q62826-636,Rattus norvegicus
 Q71U36-376,Homo sapiens
 P31356-337,Todarodes pacificus
 Q22516-280,Caenorhabditis elegans
 Q80XL6-106,Mus musculus
 Q5T4K2-44,Homo sapiens
-Q99LH2-153,Mus musculus
+P53127-207,Saccharomyces cerevisiae
 Q1L8P7-418,Danio rerio
 Q9GLP0-555,Sus scrofa
 P53832-31,Saccharomyces cerevisiae
@@ -3490,7 +3490,7 @@ Q9JHU4-2464,Mus musculus
 P16144-739,Homo sapiens
 Q07954-47,Homo sapiens
 P51881-129,Mus musculus
-P63094-365,Mus musculus
+Q15942-415,Homo sapiens
 Q91ZX7-2518,Mus musculus
 P34710-89,Caenorhabditis elegans
 Q9CQJ8-42,Mus musculus
@@ -3723,7 +3723,7 @@ P38925-161,Saccharomyces cerevisiae
 Q8LB02-198,Arabidopsis thaliana
 Q14126-637,Homo sapiens
 Q60991-361,Mus musculus
-Q921L3-97,Mus musculus
+Q96AK3-296,Homo sapiens
 Q8BGT5-264,Mus musculus
 P27046-1092,Mus musculus
 P15392-82,Mus musculus
@@ -3838,7 +3838,7 @@ P43679-150,Gallus gallus
 Q1HE58-221,Canis lupus familiaris
 P56101-124,Tetronarce californica
 Q99JW4-74,Mus musculus
-P0CX73-89,Saccharomyces cerevisiae
+Q9Z0L0-77,Mus musculus
 Q04503-310,Dictyostelium discoideum
 Q8VCM4-337,Mus musculus
 Q8C8N3-210,Mus musculus
@@ -3872,7 +3872,7 @@ Q6UY61-1654,Sabia mammarenavirus
 P60033-156,Homo sapiens
 O88703-104,Mus musculus
 Q2TPA8-218,Mus musculus
-Q12769-902,Homo sapiens
+B1AX39-314,Mus musculus
 Q13191-411,Homo sapiens
 P68403-132,Rattus norvegicus
 Q8C0E3-471,Mus musculus
@@ -3920,7 +3920,7 @@ Q99K67-765,Mus musculus
 P52522-168,Human herpesvirus 7
 P51881-160,Mus musculus
 E9Q7Y2-43,Mus musculus
-Q1LZ08-83,Drosophila melanogaster
+P25391-1056,Homo sapiens
 P62280-131,Homo sapiens
 Q9Y487-680,Homo sapiens
 Q01339-79,Mus musculus
@@ -4039,7 +4039,7 @@ Q922Q1-211,Mus musculus
 P22270-559,Drosophila melanogaster
 P46689-68,Arabidopsis thaliana
 P08752-255,Mus musculus
-P16054-98,Mus musculus
+Q9GZP0-308,Homo sapiens
 A2ARV4-3795,Mus musculus
 Q91WC9-610,Mus musculus
 Q5FWI3-581,Mus musculus
@@ -4083,7 +4083,7 @@ Q6P8J7-238,Mus musculus
 Q16527-37,Homo sapiens
 Q5W6L9-233,Oryza sativa subsp. japonica
 Q9WTP7-85,Mus musculus
-Q9TV36-1610,Sus scrofa
+P21783-298,Xenopus laevis
 P0DOT2-334,Variola virus
 P28843-466,Mus musculus
 Q99KI0-448,Mus musculus
@@ -4142,7 +4142,7 @@ Q9UBW7-676,Homo sapiens
 P09482-527,Gallus gallus
 Q9R0M0-1828,Mus musculus
 P41951-531,Caenorhabditis elegans
-P47931-118,Mus musculus
+Q810N5-55,Mus musculus
 Q91ZX7-808,Mus musculus
 P48745-244,Homo sapiens
 Q3TJD7-370,Mus musculus
@@ -4153,7 +4153,7 @@ Q15149-3336,Homo sapiens
 P27545-37,Mus musculus
 Q9SRU2-3488,Arabidopsis thaliana
 Q01518-93,Homo sapiens
-Q6J835-693,Influenza A virus
+Q00174-1820,Drosophila melanogaster
 Q05928-82,Mus musculus
 Q90607-535,Gallus gallus
 Q23192-111,Caenorhabditis elegans
@@ -4167,7 +4167,7 @@ A0JPG1-585,Xenopus laevis
 P78310-223,Homo sapiens
 Q9D892-154,Mus musculus
 O22056-25,Arabidopsis thaliana
-Q61092-445,Mus musculus
+P29388-316,Arabidopsis thaliana
 Q8CHD8-4,Mus musculus
 Q10928-9,Caenorhabditis elegans
 Q61656-191,Mus musculus
@@ -4256,7 +4256,7 @@ P13850-172,Newcastle disease virus
 P36382-61,Homo sapiens
 Q8K0E3-624,Mus musculus
 Q6NZD2-317,Mus musculus
-Q9EA42-193,Influenza A virus
+Q8N7C4-140,Homo sapiens
 Q8N6C5-392,Homo sapiens
 Q9M202-6,Arabidopsis thaliana
 Q08786-185,Saccharomyces cerevisiae
@@ -4294,7 +4294,7 @@ O70133-1031,Mus musculus
 Q02936-85,Drosophila melanogaster
 P12907-283,Murine polyomavirus
 Q1LY84-51,Danio rerio
-P0C2I8-89,Saccharomyces cerevisiae
+Q8JLI4-447,Ectromelia virus
 P68368-54,Mus musculus
 Q9NZW4-8,Homo sapiens
 Q9WVB4-1134,Mus musculus
@@ -4480,7 +4480,7 @@ Q9D8W7-46,Mus musculus
 P55268-877,Homo sapiens
 Q60930-48,Mus musculus
 O95477-23,Homo sapiens
-Q9QYP0-2013,Rattus norvegicus
+Q9QYP0-152,Rattus norvegicus
 Q8IWT3-2265,Homo sapiens
 Q6NS60-679,Mus musculus
 Q9Y4K0-625,Homo sapiens
@@ -4749,7 +4749,7 @@ Q9CQZ7-97,Mus musculus
 Q8IYW2-716,Homo sapiens
 Q14EB0-476,Human coronavirus HKU1
 Q91ZA3-107,Mus musculus
-A4GBY0-447,Influenza A virus
+O88799-4836,Mus musculus
 P98089-143,Rattus norvegicus
 Q7ZWU7-765,Xenopus laevis
 Q0A2K9-693,Influenza A virus
@@ -4958,7 +4958,7 @@ P21333-1260,Homo sapiens
 P98164-3630,Homo sapiens
 O15072-904,Homo sapiens
 Q99LC5-155,Mus musculus
-Q95209-1182,Oryctolagus cuniculus
+Q14644-453,Homo sapiens
 Q9Z0E0-113,Mus musculus
 Q9QYP2-1044,Rattus norvegicus
 H2KYQ5-377,Caenorhabditis elegans
@@ -4978,7 +4978,7 @@ P13726-277,Homo sapiens
 Q6P9S7-365,Mus musculus
 Q568V3-104,Danio rerio
 Q96EP0-722,Homo sapiens
-Q07FH7-610,Influenza A virus
+Q8R000-299,Mus musculus
 Q80UG2-822,Mus musculus
 P97872-31,Mus musculus
 Q8IUW5-88,Homo sapiens
@@ -5083,7 +5083,7 @@ P38646-366,Homo sapiens
 P92127-501,Giardia intestinalis
 A0A5S9MMK5-10,Caenorhabditis elegans
 Q9JK38-45,Mus musculus
-A8C8K1-693,Influenza A virus
+P16581-304,Homo sapiens
 Q96PB7-65,Homo sapiens
 P31695-979,Mus musculus
 O35633-421,Mus musculus
@@ -5115,7 +5115,7 @@ O88307-1183,Mus musculus
 F4IAT2-1027,Arabidopsis thaliana
 Q18078-223,Caenorhabditis elegans
 Q91V76-154,Mus musculus
-Q2RCH0-116,Influenza A virus
+O74508-179,Schizosaccharomyces pombe
 P23188-198,Mus musculus
 P09955-173,Sus scrofa
 Q8N2E2-1357,Homo sapiens
@@ -5205,7 +5205,7 @@ Q3TFQ1-54,Mus musculus
 A2ASZ8-225,Mus musculus
 Q6PCJ9-170,Xenopus laevis
 E9Q401-3204,Mus musculus
-B4PYH5-721,Drosophila yakuba
+Q5HZ97-52,Xenopus laevis
 Q8IWY4-173,Homo sapiens
 Q9Y3R5-451,Homo sapiens
 P15800-555,Rattus norvegicus
@@ -5221,7 +5221,7 @@ F7B227-36,Mus musculus
 Q9EQC1-279,Mus musculus
 Q80TZ3-455,Mus musculus
 Q8C196-1337,Mus musculus
-P0C6Y3-1970,Avian infectious bronchitis virus
+O55225-806,Mus musculus
 Q9CRD0-42,Mus musculus
 Q13137-425,Homo sapiens
 P17751-117,Mus musculus
@@ -5488,7 +5488,7 @@ O43829-145,Homo sapiens
 D3YTT4-349,Mus musculus
 Q6IRR0-569,Xenopus laevis
 Q8C088-371,Mus musculus
-Q12293-112,Saccharomyces cerevisiae
+O88277-3992,Rattus norvegicus
 P59268-161,Mus musculus
 Q8R480-51,Mus musculus
 E9QMN8-275,Mus musculus
@@ -5538,7 +5538,7 @@ Q969W1-204,Homo sapiens
 Q99K67-342,Mus musculus
 Q8VZF1-254,Arabidopsis thaliana
 O35488-133,Mus musculus
-B3LVW5-334,Drosophila ananassae
+D3ZTE0-60,Rattus norvegicus
 P33433-137,Bos taurus
 Q08211-773,Homo sapiens
 P13945-153,Homo sapiens
@@ -5610,7 +5610,7 @@ Q9Y6M5-132,Homo sapiens
 Q9D0T1-30,Mus musculus
 P70404-333,Mus musculus
 Q9ET30-64,Mus musculus
-Q9CXY9-206,Mus musculus
+Q8WXR4-1261,Homo sapiens
 Q9S9M2-325,Arabidopsis thaliana
 Q8BU25-85,Mus musculus
 Q7Z4W2-49,Homo sapiens
@@ -5733,7 +5733,7 @@ Q9IAB2-511,Xenopus laevis
 P01868-138,Mus musculus
 Q9HBG6-436,Homo sapiens
 Q91WU5-251,Mus musculus
-Q9QZI7-271,Rattus norvegicus
+Q7Z7M1-793,Homo sapiens
 O88569-50,Mus musculus
 Q9UKG9-458,Homo sapiens
 P16070-676,Homo sapiens
@@ -5796,7 +5796,7 @@ P56528-16,Mus musculus
 Q80Y14-63,Mus musculus
 P20918-257,Mus musculus
 Q86V15-625,Homo sapiens
-P21548-431,Gallus gallus
+Q8CJ70-128,Mus musculus
 Q8BJ52-109,Mus musculus
 Q5T3F8-126,Homo sapiens
 P34374-1170,Caenorhabditis elegans
@@ -5810,7 +5810,7 @@ Q8VC19-265,Mus musculus
 Q8TF72-413,Homo sapiens
 P07300-200,Murine minute virus
 Q3SWT0-142,Rattus norvegicus
-P21359-2216,Homo sapiens
+P82778-27,Arabidopsis thaliana
 Q23541-1444,Caenorhabditis elegans
 Q06432-57,Homo sapiens
 O75592-4610,Homo sapiens
@@ -6147,7 +6147,7 @@ Q8K442-693,Mus musculus
 Q9SFX0-3,Arabidopsis thaliana
 Q54J73-411,Dictyostelium discoideum
 B3LSM6-211,Saccharomyces cerevisiae
-P0CX60-89,Saccharomyces cerevisiae
+Q2V2W8-49,Arabidopsis thaliana
 A6BM72-142,Homo sapiens
 Q9QXD6-39,Mus musculus
 Q7Y1Z0-169,Oryza sativa subsp. japonica
@@ -6251,7 +6251,7 @@ P45844-154,Homo sapiens
 Q8VDV0-89,Mus musculus
 Q8BVR6-352,Mus musculus
 Q3SZD4-232,Bos taurus
-P0C6W7-142,Bovine coronavirus
+A0JMY5-220,Xenopus laevis
 P60174-104,Homo sapiens
 P54756-147,Homo sapiens
 P34465-207,Caenorhabditis elegans
@@ -6265,7 +6265,7 @@ P41739-265,Rattus norvegicus
 O35927-932,Mus musculus
 Q8S1V1-85,Oryza sativa subsp. japonica
 P52825-535,Mus musculus
-Q9P0X4-269,Homo sapiens
+Q8CG65-2722,Mus musculus
 Q55BM0-95,Dictyostelium discoideum
 P82630-79,Arabidopsis thaliana
 Q4JQV9-151,Varicella-zoster virus
@@ -6282,7 +6282,7 @@ Q64337-2-131,Mus musculus
 P45880-210,Homo sapiens
 P12566-463,Human parainfluenza 3 virus
 Q9D8T2-192,Mus musculus
-Q8HZK3-1416,Sus scrofa
+P14151-165,Homo sapiens
 Q9DCN2-284,Mus musculus
 O70497-258,Mus musculus
 A0A7H0DN61-314,Monkeypox virus
@@ -6290,7 +6290,7 @@ P35123-624,Mus musculus
 Q99LC5-109,Mus musculus
 O88457-541,Rattus norvegicus
 Q9ESS6-624,Rattus norvegicus
-Q9QYS1-347,Mus musculus
+Q12424-194,Saccharomyces cerevisiae
 Q3TD49-226,Mus musculus
 O57254-76,Vaccinia virus
 P02730-843,Homo sapiens
@@ -6303,8 +6303,8 @@ P26769-607,Rattus norvegicus
 Q99KG5-208,Mus musculus
 P26006-904,Homo sapiens
 Q8VBW8-168,Mus musculus
-Q9P0J7-36,Homo sapiens
-P0C2J1-89,Saccharomyces cerevisiae
+O16242-427,Caenorhabditis elegans
+Q55AV3-2319,Dictyostelium discoideum
 Q9SA25-266,Arabidopsis thaliana
 A8MQX3-45,Arabidopsis thaliana
 Q15233-145,Homo sapiens
@@ -6394,7 +6394,7 @@ Q6P3A8-226,Mus musculus
 Q8CIP5-326,Mus musculus
 O80995-65,Arabidopsis thaliana
 P17021-361,Homo sapiens
-P0CE41-390,Saccharomyces cerevisiae
+Q6XTD8-116,Influenza A virus
 D3Z223-145,Mus musculus
 Q9ZWJ3-395,Arabidopsis thaliana
 Q65122-244,African swine fever virus
@@ -6547,12 +6547,12 @@ Q8VHK5-350,Mus musculus
 Q9VXG1-645,Drosophila melanogaster
 Q00918-413,Rattus norvegicus
 Q80WC9-951,Mus musculus
-A2VEA3-370,Bos taurus
-Q9AUE0-341,Arabidopsis thaliana
+O15230-529,Homo sapiens
+Q18726-152,Caenorhabditis elegans
 Q704Y3-363,Mus musculus
 P19096-161,Mus musculus
 P41413-739,Rattus norvegicus
-P0CX20-1497,Saccharomyces cerevisiae
+P53413-83,Gallus gallus
 Q9M099-285,Arabidopsis thaliana
 Q60803-238,Mus musculus
 O13959-74,Schizosaccharomyces pombe
@@ -6696,7 +6696,7 @@ Q5IS99-47,Saimiri boliviensis boliviensis
 A6N6J5-226,Rattus norvegicus
 Q09177-63,Schizosaccharomyces pombe
 O83424-60,Treponema pallidum
-Q6AXM5-185,Rattus norvegicus
+Q64249-458,Mus musculus
 P08559-41,Homo sapiens
 P52534-21,Human herpesvirus 7
 P14198-96,Dictyostelium discoideum
@@ -6719,7 +6719,7 @@ Q923B6-394,Mus musculus
 P61514-57,Mus musculus
 Q67875-302,Hepatitis B virus genotype D subtype ayw
 P30873-339,Mus musculus
-Q9CU65-675,Mus musculus
+Q54TW0-1738,Dictyostelium discoideum
 P0C6W7-6346,Bovine coronavirus
 Q8C6G8-318,Mus musculus
 Q05816-43,Mus musculus
@@ -6737,7 +6737,7 @@ Q9S9K4-148,Arabidopsis thaliana
 P40763-712,Homo sapiens
 P32225-140,Swinepox virus
 P31040-438,Homo sapiens
-O35454-283,Mus musculus
+P83103-231,Drosophila melanogaster
 Q5PQQ8-202,Rattus norvegicus
 P31040-238,Homo sapiens
 Q6DGT7-198,Danio rerio
@@ -6839,7 +6839,7 @@ Q39032-11,Arabidopsis thaliana
 Q6PB66-207,Mus musculus
 Q6S8J7-31,Homo sapiens
 P56593-163,Mus musculus
-P09216-98,Rattus norvegicus
+Q9TV36-1706,Sus scrofa
 P30989-381,Homo sapiens
 Q8R3P0-275,Mus musculus
 P62873-148,Homo sapiens
@@ -6951,7 +6951,7 @@ Q3EDD7-67,Arabidopsis thaliana
 Q08460-54,Mus musculus
 P27577-106,Mus musculus
 O00755-332,Homo sapiens
-Q924S4-109,Rattus norvegicus
+P28798-376,Mus musculus
 Q28894-97,Canis lupus familiaris
 Q5JRV8-188,Homo sapiens
 Q9SSA4-309,Arabidopsis thaliana
