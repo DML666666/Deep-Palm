@@ -1,11 +1,20 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-
 import os
+import sys
+import platform
 import math
 import json
 import copy
 import random
+import re
+import hashlib
+import warnings
+import io
+import zipfile
+import tempfile
+import shutil
+
+
+os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
 from contextlib import nullcontext
 from dataclasses import dataclass
 from typing import List, Dict, Tuple, Optional
@@ -13,26 +22,44 @@ from typing import List, Dict, Tuple, Optional
 import numpy as np
 import pandas as pd
 import h5py
-import matplotlib.pyplot as plt
+import sklearn
 from tqdm import tqdm
 
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
-                    
+
+
+def _ensure_python_hash_seed(seed: int = 3407):
+
+    desired = str(int(seed))
+    if os.environ.get('PYTHONHASHSEED') == desired:
+        return
+    if os.environ.get('DEEPPALM_HASHSEED_REEXEC') == '1':
+        raise RuntimeError('Unable to enforce PYTHONHASHSEED before startup.')
+    os.environ['PYTHONHASHSEED'] = desired
+    os.environ['DEEPPALM_HASHSEED_REEXEC'] = '1'
+    os.execv(sys.executable, [sys.executable] + sys.argv)
+
+
+if __name__ == '__main__':
+    _ensure_python_hash_seed(3407)
 try:
-    from sklearn.metrics import roc_auc_score, accuracy_score
+    from sklearn.metrics import (
+        roc_auc_score,
+        average_precision_score,
+    )
     SKLEARN_OK = True
 except Exception:
     SKLEARN_OK = False
 
 try:
-    from Bio.SeqUtils.ProtParam import ProteinAnalysis
-    BIOPY_OK = True
+    from Bio.PDB import PDBParser
+    BIOPDB_OK = True
 except Exception:
-    BIOPY_OK = False
-
+    PDBParser = None
+    BIOPDB_OK = False
 
 def build_uid2idx(h5_path: str) -> dict:
     import h5py, os
@@ -54,135 +81,499 @@ def build_uid2idx(h5_path: str) -> dict:
     return {u: i for i, u in enumerate(uids)}
 
 
-                               
-                     
-                               
+CSV_PATH = (
+    'input.csv'
+)
+
+ESM_H5 = (
+    'embedding.h5'
+)
+
+PDB_DIR = (
+    'esmfold.pdb'
+)
+
+AAINDEX1_PATH = (
+    'aaindex1.txt'
+)
+
+AAINDEX_PCA_PATH = (
+    'AAindex_PCA.csv'
+)
+
+
+
+
+
+RUN_ROOT = (
+    'output'
+)
+
+
+OUT_DIR = os.path.join(
+    RUN_ROOT,
+    "output",
+)
+
+MODEL_DIR = os.path.join(
+    RUN_ROOT,
+    "models",
+)
+
+CACHE_DIR = os.path.join(
+    RUN_ROOT,
+    "cache",
+)
+
+STRUCTURE_CACHE_DIR = os.path.join(
+    CACHE_DIR,
+    "structure",
+)
+
+
+FINAL_MODEL_PATH = os.path.join(
+    RUN_ROOT,
+    "DeepPalm.pth",
+)
+
+
+
+
+
+
+
+DEPLOY_BUNDLE_PATH = (
+    'DeepPalm.dpalm'
+)
+
+
+
+RUN_MODE = 'auto_resume'
+
+
+EXISTING_FINAL_MODEL_PATH = (
+    'DeepPalm_V14_FINAL.pth'
+)
+EXISTING_REFERENCE_PREDICTIONS = (
+    'single_model_test_predictions_FINAL.csv'
+)
+
+
+DEPLOY_VERIFY_MAX_ABS = 5e-7
+DEPLOY_VERIFY_MEAN_ABS = 5e-8
+DEPLOY_VERIFY_THRESHOLDS = (0.5, 0.9)
+DEPLOY_TRACE_BATCH_SIZE = 8
+
+
+DEPLOY_RESUME = True
+DEPLOY_EXPORT_VERSION = 2
+DEPLOY_CACHE_DIR = os.path.join(
+    os.path.dirname(os.path.abspath(DEPLOY_BUNDLE_PATH)),
+    '_deploy_resume_cache',
+)
+
+
+
+
+
+
+
+
+
 CONFIG: Dict = {
-                    
-    'CSV_PATH': 'esm_input.csv',
-    'ESM_H5':   'embedding.h5',
-    'OUT_DIR':  'output',
-    'MODEL_DIR': 'models',
-    'SPECIES_CSV':'uniprotid_species.csv',
-    'SPECIES_MIN_SAMPLES': 100,
-                                    
-    'PDB_DIR': 'esmfold.pdb',
 
-                      
-                                        
-                                                 
-                                     
-    'DIST2D_MODE': 'inv',
-    'DIST2D_MAX_DIST': 30.0,
-    'DIST2D_CONTACT_THRESH': 8.0,
-    'CADIST_IN_CHANNELS': 6,
-           
-    'FINAL_REPEAT_ID': 666,
+    'CSV_PATH': CSV_PATH,
+    'ESM_H5': ESM_H5,
+    'PDB_DIR': PDB_DIR,
+    'AAINDEX1_PATH': AAINDEX1_PATH,
+    'AAINDEX_PCA_PATH': AAINDEX_PCA_PATH,
+    'OUT_DIR': OUT_DIR,
+    'MODEL_DIR': MODEL_DIR,
+    'CACHE_DIR': CACHE_DIR,
+    'STRUCTURE_CACHE_DIR': STRUCTURE_CACHE_DIR,
+    'FINAL_MODEL_PATH': FINAL_MODEL_PATH,
 
-                      
     'RANDOM_SEED': 3407,
-    'SPLIT_SEED':  2025,
-    'CV_SEED':     1314,
-    'N_REPEATS':   1,
-    'N_FOLDS':     5,
-    'TEST_RATIO':  0.10,
-    'EPOCHS':      128,
-    'BATCH_SIZE':  1024,
-    'LR':          5e-4,
-    'WEIGHT_DECAY':5e-4,
-    'DEVICE':      'cuda' if torch.cuda.is_available() else 'cpu',
-                                                           
-                                    
-    'AMP':         False,
-                                                      
+    'SPLIT_SEED': 2025,
+    'CV_SEED': 1314,
+    'N_REPEATS': 3,
+    'N_FOLDS': 5,
+    'TEST_RATIO': 0.2,
+    'DEVICE': 'cuda' if torch.cuda.is_available() else 'cpu',
+    'AMP': False,
     'DETERMINISTIC': True,
-"""复现优先：AMP=False, DETERMINISTIC=True, ALLOW_TF32=False, CUDNN_BENCHMARK=False, NUM_WORKERS=0
-   速度优先：AMP=True, DETERMINISTIC=False, ALLOW_TF32=True, CUDNN_BENCHMARK=True"""
-                     
-    'EARLY_STOP_PATIENCE': 5,
     'PRIMARY_METRIC': 'auc',
     'METRIC_THRESHOLD': 0.5,
-    'BALANCE_POS_NEG': True,                       
+    'GROUP_SPLIT_BY_PROTEIN': True,
 
-                       
-    'DROPOUT': 0.5,
-    'HIDDEN':  256,
+    'RESUME': True,
+    'RESUME_VERSION': 17,
+    'SAVE_RESUME_EVERY_EPOCH': True,
+    'KEEP_LAST_RESUME_AFTER_DONE': True,
+    'ESM_CACHE_IN_RAM': True,
+    'ESM_CACHE_MAX_GB': 6.0,
+    'ESM_NORMALIZE_VALID_ONLY': True,
+    'SUPPRESS_DETERMINISTIC_WARNINGS': True,
 
-                           
-    'VCONV_KERNELS': 128,
-    'VCONV_KSIZE':  7,
-    'VCONV_LAYERS': 2,
-                           
-    'AUG_PER_SAMPLE': 2,
-    'AUG_MAX_MUTS':   2,
+    'NEG_POS_RATIO': 1,
+    'NEG_POS_RATIO_KMER': 2,
+    'NEG_SAMPLE_SEED': 20260817,
+    'V12_HARD_PAIR_RANK': True,
+    'V12_HARD_PAIR_FRACTION': 0.5,
 
-                            
-    'KMERS': [2, 3, 4],
-    'KMER_EMBED': 32,
-    'TOP_KMER_K5': 200000,
-    'TOP_KMER_K4': None,
+    'PHYSCHEM_PCA_DIM': 14,
 
-                             
-    'LABEL_SMOOTH': 0.05,
+    'ESM_CQT_DIM': 256,
+    'ESM_CQT_HEADS': 8,
+    'ESM_CQT_LAYERS': 2,
+    'ESM_CQT_FFN': 512,
+    'ESM_CQT_DROPOUT': 0.15,
+    'ESM_CQT_LOCAL_RADIUS': 7,
+    'ESM_CQT_SIDE_RADIUS': 10,
+    'ESM_SC_DIM': 192,
+    'ESM_SC_REL_DIM': 192,
+    'ESM_SC_RADII': [1, 2, 3, 5, 7, 10, 15],
+    'ESM_SC_DROPOUT': 0.18,
+    'ESM_SC_USE_POSITION_EMB': True,
+    'WEIGHT_DECAY_ESM_SITECONTRAST': 0.0005,
+    'ESM_SC2_DIM': 192,
+    'ESM_SC2_REL_DIM': 192,
+    'ESM_SC2_RADII': [1, 2, 3, 5, 7, 10, 15],
+    'ESM_SC2_DROPOUT': 0.16,
+    'ESM_SC2_RANK_LOSS_ALPHA': 0.06,
+    'ESM_SC2_RANK_WARMUP_EPOCHS': 6,
+    'ESM_SC2_RANK_MAX_PAIRS': 4096,
+
+    'KMERS': [1, 2, 3],
+    'KMER_EMBED': 64,
+    'KMER_CONV_CHANNELS': 64,
+    'KMER_MULTI_KERNELS': [3, 5, 7],
+    'KMER_HEAD_DIM': 192,
+    'KMER_LOCAL_RADIUS': 4,
+    'KMER_MIN_COUNT': {
+        1: 1,
+        2: 2,
+        3: 2,
+    },
+    'KMER_FOLD_MIN_COUNT': 1,
+    'DROPOUT_KMER': 0.25,
+    'WEIGHT_DECAY_KMER': 0.0003,
+    'KMER_RANK_LOSS_ALPHA': 0.03,
+    'KMER_RANK_WARMUP_EPOCHS': 6,
+    'KMER_RANK_MAX_PAIRS': 4096,
+
+    'STRUCTURE_PRELOAD': True,
+    'STRUCTURE_ALLOW_BASE_FALLBACK': True,
+    'STRUCTURE_REQUIRE_CENTER_CYS': False,
+    'STRUCTURE_CONTACT_THRESH': 8.0,
+    'STRUCTURE_EDGE_DIM': 192,
+    'STRUCTURE_EDGE_LAYERS': 3,
+    'STRUCTURE_DROPOUT': 0.2,
+    'STRUCTURE_CHEM_HIDDEN': 96,
+    'STRUCTURE_NODE_SCALAR_DIM': 8,
+    'STRUCTURE_EDGE_AUG_DIM': 22,
+    'STRUCTURE_SHELL_RADII': [4.0, 6.0, 8.0, 10.0],
+    'STRUCTURE_SHELL_ATTN_DIM': 96,
+    'STRUCTURE_HEAD_HIDDEN': 384,
+    'STRUCTURE_DISTANCE_SCALE': 20.0,
+    'STRUCTURE_QUALITY_DIM': 3,
+    'STRUCTURE_RANK_LOSS_ALPHA': 0.1,
+    'STRUCTURE_RANK_WARMUP_EPOCHS': 8,
+    'STRUCTURE_RANK_MAX_PAIRS': 4096,
+    'BATCH_SIZE_STRUCTURE': 128,
+    'LR_STRUCTURE': 0.0003,
+    'EARLY_STOP_PATIENCE_STRUCTURE': 16,
+    'EPOCHS_STRUCTURE': 180,
+    'WEIGHT_DECAY_STRUCTURE': 0.0003,
+
+    'EPOCHS': 128,
+    'BATCH_SIZE': 1024,
+    'BATCH_SIZE_PHYSCHEM': 256,
+    'BATCH_SIZE_ESM': 512,
+    'BATCH_SIZE_ESM_CQT': 256,
+    'BATCH_SIZE_ESM_SITECONTRAST': 256,
+    'BATCH_SIZE_KMER': 256,
+    'LR': 0.0005,
+    'LR_PHYSCHEM': 0.0005,
+    'LR_ESM': 0.0004,
+    'LR_ESM_CQT': 0.0003,
+    'LR_ESM_SITECONTRAST': 0.0003,
+    'LR_KMER': 0.0008,
+    'WEIGHT_DECAY': 0.0005,
+    'EARLY_STOP_PATIENCE': 10,
+    'EARLY_STOP_PATIENCE_KMER': 12,
+    'HIDDEN': 256,
+    'BASE_RANK_LOSS_ALPHA': 0.0,
+    'BASE_RANK_WARMUP_EPOCHS': 5,
+    'BASE_RANK_MAX_PAIRS': 2048,
+    'LABEL_SMOOTH': 0.0,
     'GRAD_CLIP_NORM': 1.0,
     'USE_PLATEAU_SCHED': True,
-    'MIN_LR': 1e-5,
-    'DROPOUT_KMER': 0.4,
-    'WEIGHT_DECAY_KMER': 1e-3,
+    'MIN_LR': 1e-05,
 
-                    
-    'BLEND_GRID_STEP': 0.1,
-    'BLEND_REFINE': True,
-    'BLEND_MIN_WEIGHT': 0.1,
+    'META_N_FOLDS': 5,
+    'META_SEED': 9527,
+    'META_SHARED_SEED': 91001,
+    'META_C_GRID': [
+        0.01, 0.03, 0.10, 0.30, 1.0, 3.0, 10.0,
+    ],
+    'META_LOGIT_CLIP': 0.0001,
 
-                    
-    'SCORE_RIGHT_ALPHA': 1.0,
-    'SCORE_WRONG_BETA': 1.0,
 
-                           
-                                  
-    'ENABLED_BRANCHES': {
-        'physchem':        True,  
-        'esm':             True,
-        'kmer':            True,
-        'esmfold':         True,   
-    },
 
+
+
+    'GROUP_FUSION_C': 0.1,
+    'GROUP_FUSION_LOGIT_CLIP': 1e-5,
+
+
+    'FUSION_CANDIDATES': [
+        'four_modality_interaction_stack_cf',
+        'four_modality_linear_stack_cf',
+    ],
+    'FUSION_SELECTION_PRIMARY': 'auc',
+    'FUSION_SELECTION_SECONDARY': 'auprc',
+
+    'TRAIN_SINGLE_FINAL_MODEL': True,
+
+    'FINAL_EPOCH_SCALE': 1.0,
+    'FINAL_MIN_EPOCHS': 4,
+    'FINAL_SEED': 20260828,
+
+
+    'FINAL_SCORE_ALIGNMENT': True,
+
+    'EXPERT_ORDER': ['physchem', 'physchem_pca', 'esm_cqt', 'esm_sitecontrast', 'esm_sitecontrast_v2', 'kmer', 'structure'],
+    'FOLD_SCORE_ALIGNMENT': True,
+    'FOLD_ALIGN_EPS': 1e-06,
+    'USE_ALIGNED_FOR_FUSION': True,
+
+
+    'STRICT_REPRODUCIBILITY': True,
+    'WRITE_REPRODUCIBILITY_MANIFEST': True,
+
+
+    'HASH_INPUT_CONTENTS': True,
 }
 
-                                                           
-                                            
-                        
-                                                           
 
-import copy
-from typing import Tuple
-from Bio.PDB import PDBParser, Polypeptide
-import matplotlib.pyplot as plt
-from sklearn.metrics import roc_curve, roc_auc_score
+for _d in (
+    CONFIG['OUT_DIR'],
+    CONFIG['MODEL_DIR'],
+    CONFIG['CACHE_DIR'],
+    CONFIG['STRUCTURE_CACHE_DIR'],
+):
+    os.makedirs(_d, exist_ok=True)
 
-                                                 
+
+def _sha256_file(path: str, chunk_size: int = 8 * 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        while True:
+            block = f.read(chunk_size)
+            if not block:
+                break
+            h.update(block)
+    return h.hexdigest()
+
+
+def _fingerprint_file(path: str, hash_contents: bool) -> Dict:
+    if not os.path.isfile(path):
+        raise FileNotFoundError(f'Reproducibility input missing: {path}')
+    row = {
+        'path': os.path.abspath(path),
+        'size_bytes': int(os.path.getsize(path)),
+    }
+    row['sha256'] = _sha256_file(path) if hash_contents else None
+    return row
+
+
+def _fingerprint_directory(path: str, hash_contents: bool) -> Dict:
+    if not os.path.isdir(path):
+        raise NotADirectoryError(f'Reproducibility input directory missing: {path}')
+    root = os.path.abspath(path)
+    tree = hashlib.sha256()
+    count = 0
+    total_bytes = 0
+    for current, dirs, files in os.walk(root):
+        dirs.sort()
+        files.sort()
+        for name in files:
+            full = os.path.join(current, name)
+            if not os.path.isfile(full):
+                continue
+            rel = os.path.relpath(full, root).replace(os.sep, '/')
+            size = int(os.path.getsize(full))
+            count += 1
+            total_bytes += size
+            tree.update(rel.encode('utf-8'))
+            tree.update(b'\0')
+            tree.update(str(size).encode('ascii'))
+            tree.update(b'\0')
+            if hash_contents:
+                tree.update(_sha256_file(full).encode('ascii'))
+            tree.update(b'\n')
+    return {
+        'path': root,
+        'file_count': int(count),
+        'total_bytes': int(total_bytes),
+        'tree_sha256': tree.hexdigest(),
+        'content_hashed': bool(hash_contents),
+    }
+
+
+def write_reproducibility_manifest() -> str:
+
+    if not bool(CONFIG.get('WRITE_REPRODUCIBILITY_MANIFEST', True)):
+        return ''
+    hash_contents = bool(CONFIG.get('HASH_INPUT_CONTENTS', True))
+    input_files = {
+        'training_csv': CONFIG['CSV_PATH'],
+        'esm_h5': CONFIG['ESM_H5'],
+        'aaindex1': CONFIG['AAINDEX1_PATH'],
+        'aaindex_pca': CONFIG['AAINDEX_PCA_PATH'],
+    }
+    inputs = {
+        name: _fingerprint_file(path, hash_contents)
+        for name, path in input_files.items()
+    }
+    inputs['pdb_dir'] = _fingerprint_directory(
+        CONFIG['PDB_DIR'], hash_contents=hash_contents,
+    )
+
+    script_path = os.path.abspath(__file__)
+    manifest = {
+        'pipeline': 'DeepPalm V14 train-and-auto-fusion',
+        'script': _fingerprint_file(script_path, hash_contents=True),
+        'inputs': inputs,
+        'seeds': {
+            key: CONFIG[key]
+            for key in (
+                'RANDOM_SEED', 'SPLIT_SEED', 'CV_SEED', 'NEG_SAMPLE_SEED',
+                'META_SEED', 'META_SHARED_SEED', 'FINAL_SEED',
+            )
+        },
+        'environment': {
+            'python': sys.version,
+            'platform': platform.platform(),
+            'numpy': np.__version__,
+            'pandas': pd.__version__,
+            'h5py': h5py.__version__,
+            'sklearn': sklearn.__version__,
+            'torch': torch.__version__,
+            'cuda_runtime': torch.version.cuda,
+            'cudnn': torch.backends.cudnn.version(),
+            'cuda_available': bool(torch.cuda.is_available()),
+            'gpu_names': [
+                torch.cuda.get_device_name(i)
+                for i in range(torch.cuda.device_count())
+            ] if torch.cuda.is_available() else [],
+            'PYTHONHASHSEED': os.environ.get('PYTHONHASHSEED'),
+        },
+        'determinism': {
+            'strict': bool(CONFIG.get('STRICT_REPRODUCIBILITY', True)),
+            'amp': bool(CONFIG.get('AMP', False)),
+            'allow_tf32': bool(CONFIG.get('ALLOW_TF32', False)),
+            'cudnn_benchmark': bool(CONFIG.get('CUDNN_BENCHMARK', False)),
+            'num_workers_esm': int(CONFIG.get('NUM_WORKERS_ESM', 0)),
+            'num_workers_other': int(CONFIG.get('NUM_WORKERS_OTHER', 0)),
+        },
+        'config': copy.deepcopy(CONFIG),
+    }
+    path = os.path.join(CONFIG['OUT_DIR'], 'reproducibility_manifest.json')
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(manifest, f, indent=2, ensure_ascii=False, default=str)
+    print('[Reproducibility] manifest ->', path)
+    return path
+
+
+def write_result_checksums(fina_dir: str, selected_method: str,
+                           include_model: bool) -> str:
+
+    candidates = [
+        os.path.join(fina_dir, 'train_OOF_predictions_FINAL.csv'),
+        os.path.join(fina_dir, 'test_predictions_FULL_FINAL.csv'),
+        os.path.join(fina_dir, 'test_predictions_FINAL.csv'),
+        os.path.join(fina_dir, 'fusion_candidates_FINAL.csv'),
+        os.path.join(fina_dir, 'fusion_params_FINAL.json'),
+        os.path.join(fina_dir, 'v14_final_summary.json'),
+    ]
+    if include_model:
+        candidates.insert(0, CONFIG['FINAL_MODEL_PATH'])
+        candidates.append(
+            os.path.join(fina_dir, 'single_model_test_predictions_FINAL.csv')
+        )
+    files = {}
+    for path in candidates:
+        if os.path.isfile(path):
+            files[os.path.basename(path)] = {
+                'size_bytes': int(os.path.getsize(path)),
+                'sha256': _sha256_file(path),
+            }
+    obj = {
+        'selected_fusion_method': str(selected_method),
+        'files': files,
+        'comparison_rule': (
+            'With identical reproducibility_manifest inputs/environment, '
+            'matching hashes confirm an identical run artifact.'
+        ),
+    }
+    path = os.path.join(fina_dir, 'result_checksums_FINAL.json')
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, indent=2, ensure_ascii=False)
+    print('[Reproducibility] result checksums ->', path)
+    return path
+
+FINAL_EXPERTS = [
+    'physchem',
+    'physchem_pca',
+    'esm_cqt',
+    'esm_sitecontrast',
+    'esm_sitecontrast_v2',
+    'kmer',
+    'structure',
+]
+
+
+FUSED_MODALITIES = [
+    'physchem_fused',
+    'esm_fused',
+    'kmer',
+    'structure',
+]
+PHYS_EXPERTS = ['physchem', 'physchem_pca']
+ESM_EXPERTS = ['esm_cqt', 'esm_sitecontrast', 'esm_sitecontrast_v2']
+
+
+
 MAX_LEN = 31
-CONTACT_THRESH = 8.0
 
-                                                         
-AAINDEX1_PATH = "aaindex1.txt"  
+def resolve_aaindex1_path() -> str:
+    path = str(CONFIG.get('AAINDEX1_PATH', '')).strip()
+    if path and os.path.exists(path):
+        print(f"[AAindex] 使用: {path}")
+        return path
+    raise FileNotFoundError(
+        "找不到 aaindex1.txt。请只修改文件顶部路径区的 AAINDEX1_PATH。"
+    )
+
+AAINDEX1_PATH = resolve_aaindex1_path()
 
 AAINDEX_IDS = [
-    "KYTJ820101",                                                             
-    "GRAR740102",                                      
-    "GRAR740103",                                   
-    "KARP850101",                                                
-    "CHOP780201",                                                      
-    "CHOP780202",                                                     
-    "ZIMJ680104",                                   
-    "HOPT810101",                                                        
-    "CHOC760101",                                                             
-    "VINM940101",                                                                          
-    "PUNT030101",                                                         
-    "CHOP780203",                                              
-    "RACS770102",                                                     
-    "MIYS990101",                                                                                                   
+    "KYTJ820101",
+    "GRAR740102",
+    "GRAR740103",
+    "KARP850101",
+    "CHOP780201",
+    "CHOP780202",
+    "ZIMJ680104",
+    "HOPT810101",
+    "CHOC760101",
+    "VINM940101",
+    "PUNT030101",
+    "CHOP780203",
+    "RACS770102",
+    "MIYS990101",
 ]
 
 AA_INDEX_ORDER = [
@@ -223,7 +614,7 @@ def load_aaindex_entry(filepath: str, entry_id: str):
             f"{entry_id}: 解析到 {len(vals)} 个数 (期望 20)，请检查 aaindex1 路径或文件格式。"
         )
     return dict(zip(AA_INDEX_ORDER, vals))
-           
+
 def build_physico_chemical_features(aaindex_path: str):
     num_idx = len(AAINDEX_IDS)
     num_aa = len(AA_INDEX_ORDER)
@@ -234,132 +625,112 @@ def build_physico_chemical_features(aaindex_path: str):
             [entry_dict[aa] for aa in AA_INDEX_ORDER],
             dtype=np.float32
         )
+
     means = raw_matrix.mean(axis=1, keepdims=True)
     stds = raw_matrix.std(axis=1, ddof=0, keepdims=True)
     stds[stds == 0] = 1.0
     z_matrix = (raw_matrix - means) / stds
+
     feat_dict = {
         aa: z_matrix[:, j].astype(np.float32).tolist()
         for j, aa in enumerate(AA_INDEX_ORDER)
     }
     feat_dict["X"] = [0.0] * num_idx
+    feat_dict["*"] = [0.0] * num_idx
     return feat_dict
 
 PHYSICO_CHEMICAL_FEATURES = build_physico_chemical_features(AAINDEX1_PATH)
 SEQ_FEAT_DIM = len(AAINDEX_IDS)
-AA_3_TO_1 = Polypeptide.protein_letters_3to1
 
-                                                            
-parser = PDBParser(QUIET=True)
-BACKBONE_ATOMS = {"N", "CA", "C", "O"}
+def get_seq_feat_from_sequence(seq: str, max_len: int = MAX_LEN) -> Tuple[np.ndarray, np.ndarray]:
+    seq = ensure_len_31(clean_seq(seq))
+    seq = seq[:max_len]
 
-def load_residues_from_pdb(pdb_path: str):
-    structure = parser.get_structure(os.path.basename(pdb_path), pdb_path)
-    model = structure[0]
-    residues = []
-    for chain in model:
-        for res in chain:
-            if "CA" in res:
-                residues.append(res)
-    return residues
+    feat = [
+        PHYSICO_CHEMICAL_FEATURES.get(aa, PHYSICO_CHEMICAL_FEATURES["X"])
+        for aa in seq
+    ]
+    mask = [0.0 if aa == '*' else 1.0 for aa in seq]
 
-def get_ca_coord(residue) -> np.ndarray:
-    return residue["CA"].get_coord().astype(np.float32)
+    if len(feat) < max_len:
+        n_pad = max_len - len(feat)
+        feat.extend([PHYSICO_CHEMICAL_FEATURES["*"]] * n_pad)
+        mask.extend([0.0] * n_pad)
 
-def get_heavy_atom_coords(residue) -> np.ndarray:
-    coords = []
-    for atom in residue:
-        name = atom.get_name()
-        if not name.startswith("H"):
-            coords.append(atom.get_coord())
-    if not coords:
-        coords.append(residue["CA"].get_coord())
-    return np.array(coords, dtype=np.float32)
+    return (
+        np.asarray(feat, dtype=np.float32),
+        np.asarray(mask, dtype=np.float32),
+    )
 
-def get_sidechain_center(residue) -> np.ndarray:
-    if "CB" in residue:
-        return residue["CB"].get_coord().astype(np.float32)
-    coords = []
-    for atom in residue:
-        name = atom.get_name()
-        if not name.startswith("H") and name not in BACKBONE_ATOMS:
-            coords.append(atom.get_coord())
-    if coords:
-        coords = np.stack(coords, axis=0)
-        return coords.mean(axis=0).astype(np.float32)
-    return get_ca_coord(residue)
 
-def pairwise_dist_matrix(coords: np.ndarray) -> np.ndarray:
-    diff = coords[:, None, :] - coords[None, :, :]
-    dist = np.linalg.norm(diff, axis=-1)
-    return dist.astype(np.float32)
 
-def compute_min_heavy_atom_dist(residues) -> np.ndarray:
-    L = len(residues)
-    heavy_coords = [get_heavy_atom_coords(r) for r in residues]
-    mat = np.zeros((L, L), dtype=np.float32)
-    for i in range(L):
-        ci = heavy_coords[i]
-        for j in range(L):
-            cj = heavy_coords[j]
-            diff = ci[:, None, :] - cj[None, :, :]
-            d = np.linalg.norm(diff, axis=-1)
-            mat[i, j] = d.min()
-    return mat
+def _v9_sort_pc_cols(cols):
+    def key(c):
+        m = re.search(r"(\d+)", str(c))
+        return int(m.group(1)) if m else 10**9
+    return sorted(cols, key=key)
 
-def build_pair_feature_from_residues(
-    residues,
-    max_len: int = MAX_LEN
-) -> Tuple[np.ndarray, int]:
-    residues = residues[:max_len]
-    L = len(residues)
-    if L == 0:
-        raise ValueError("该 PDB 中没有带 CA 的残基")
-    ca = np.stack([get_ca_coord(r) for r in residues], axis=0)
-    sc = np.stack([get_sidechain_center(r) for r in residues], axis=0)
-    dist_ca = pairwise_dist_matrix(ca)
-    dist_sc = pairwise_dist_matrix(sc)
-    dist_min = compute_min_heavy_atom_dist(residues)
-    contact = (dist_ca < CONTACT_THRESH).astype(np.float32)
-    idx = np.arange(L)
-    seq_sep = np.abs(idx[:, None] - idx[None, :]).astype(np.float32)
-    long_range = ((seq_sep >= 6) & (dist_ca < CONTACT_THRESH)).astype(np.float32)
-    seq_sep_norm = seq_sep / (L - 1) if L > 1 else seq_sep
-    feat = np.stack(
-        [dist_ca, dist_min, dist_sc, contact, long_range, seq_sep_norm],
-        axis=0
-    )             
-    pair_feat = np.zeros((6, max_len, max_len), dtype=np.float32)
-    pair_feat[:, :L, :L] = feat
-    return pair_feat, L
+_PHYSCHEM_PCA_LOOKUP = None
 
-                                                 
-def get_seq_feat(residues, max_len: int = MAX_LEN) -> Tuple[np.ndarray, int]:
-    seq_feat = []
-    residues = residues[:max_len]
-    L = len(residues)
-    for res in residues:
-        res_name = res.get_resname().upper()
-        aa_code = AA_3_TO_1.get(res_name, 'X')
-        feat = PHYSICO_CHEMICAL_FEATURES.get(
-            aa_code,
-            PHYSICO_CHEMICAL_FEATURES['X']
+def load_physchem_pca_lookup(path: str, n_components: int = 14):
+    if not path or not os.path.exists(path):
+        raise FileNotFoundError(f'PCA lookup不存在: {path}')
+    df = pd.read_csv(path)
+    aa_col = None
+    for c in df.columns:
+        if str(c).strip().lower() in {'aa','amino_acid','aminoacid','residue','amino acid'}:
+            aa_col = c; break
+    if aa_col is None:
+        c0 = df.columns[0]
+        vals = df[c0].astype(str).str.strip().str.upper().tolist()
+        if sum(v in set(AA_INDEX_ORDER) for v in vals) >= 18:
+            aa_col = c0
+    if aa_col is None and len(df) == 20:
+        df = df.copy(); df.insert(0, 'AA', AA_INDEX_ORDER); aa_col = 'AA'
+    if aa_col is None:
+        raise RuntimeError(f'无法识别PCA氨基酸列: columns={list(df.columns)}')
+    pc_cols = [c for c in df.columns if re.match(r'(?i)^pc\s*\d+$', str(c).strip())]
+    if not pc_cols:
+        pc_cols = [c for c in df.columns if c != aa_col and pd.api.types.is_numeric_dtype(df[c])]
+    pc_cols = _v9_sort_pc_cols(pc_cols)
+    if len(pc_cols) < n_components:
+        raise RuntimeError(f'PCA列不足: have={len(pc_cols)} need={n_components}')
+    use = pc_cols[:n_components]
+    out = {}
+    for _, row in df.iterrows():
+        aa = str(row[aa_col]).strip().upper()
+        if aa in AA_INDEX_ORDER:
+            out[aa] = np.asarray([row[c] for c in use], dtype=np.float32)
+    miss = [aa for aa in AA_INDEX_ORDER if aa not in out]
+    if miss:
+        raise RuntimeError(f'PCA lookup缺少AA: {miss}')
+    out['X'] = np.zeros(n_components, dtype=np.float32)
+    out['*'] = np.zeros(n_components, dtype=np.float32)
+    print(f'[Physchem PCA] {path} -> dim={n_components}, last={use[-1]}')
+    return out
+
+def get_physchem_pca_lookup():
+    global _PHYSCHEM_PCA_LOOKUP
+    if _PHYSCHEM_PCA_LOOKUP is None:
+        _PHYSCHEM_PCA_LOOKUP = load_physchem_pca_lookup(
+            CONFIG['AAINDEX_PCA_PATH'], int(CONFIG.get('PHYSCHEM_PCA_DIM', 14))
         )
-        seq_feat.append(feat)
-    if L < max_len:
-        padding_feat = PHYSICO_CHEMICAL_FEATURES['X']
-        seq_feat.extend([padding_feat] * (max_len - L))
-    return np.array(seq_feat, dtype=np.float32)[:max_len], L
+    return _PHYSCHEM_PCA_LOOKUP
 
-                                                    
-class GCNLayer(nn.Module):
-    def __init__(self, in_dim: int, out_dim: int):
-        super().__init__()
-        self.linear = nn.Linear(in_dim, out_dim)
-    def forward(self, x, adj_norm):
-        h_prime = torch.bmm(adj_norm, x)
-        h_prime = self.linear(h_prime)
-        return F.relu(h_prime)
+def get_pca_feat_from_sequence(seq: str, max_len: int = MAX_LEN):
+    lookup = get_physchem_pca_lookup()
+    dim = int(CONFIG.get('PHYSCHEM_PCA_DIM', 14))
+    seq = ensure_len_31(clean_seq(seq))[:max_len]
+    feat, mask = [], []
+    for aa in seq:
+        feat.append(lookup.get(aa, lookup['X']))
+        mask.append(0.0 if aa == '*' else 1.0)
+    while len(feat) < max_len:
+        feat.append(lookup['*']); mask.append(0.0)
+    arr = np.asarray(feat, dtype=np.float32)
+    if arr.shape != (max_len, dim):
+        raise RuntimeError(f'PCA feature shape={arr.shape}, expected={(max_len,dim)}')
+    return arr, np.asarray(mask, dtype=np.float32)
 
 class AttentionReadout(nn.Module):
     def __init__(self, node_dim: int, attn_dim: int = 128):
@@ -367,152 +738,64 @@ class AttentionReadout(nn.Module):
         self.attn_layer = nn.Linear(node_dim, attn_dim)
         self.output_proj = nn.Linear(attn_dim, 1)
         nn.init.xavier_uniform_(self.output_proj.weight)
-        self.output_proj.bias.data.fill_(0)
+        nn.init.zeros_(self.output_proj.bias)
+
     def forward(self, h, mask):
         scores = torch.tanh(self.attn_layer(h))
         logits = self.output_proj(scores).squeeze(-1)
-        mask_inf = (1.0 - mask) * -1e9
-        masked_logits = logits + mask_inf
+        masked_logits = logits + (1.0 - mask) * -1e9
         attn_weights = F.softmax(masked_logits, dim=-1)
-        g_attn = torch.bmm(attn_weights.unsqueeze(1), h).squeeze(1)
-        return g_attn
-
-class BranchESMFold(nn.Module):
-       
-                                                       
-       
-                                      
-                              
-       
-                     
-       
-    def __init__(self,
-                 in_channels: int = 6,
-                 pair_hidden: int = 128,
-                 node_hidden: int = 256,
-                 gnn_layers: int = 2):
-        super().__init__()
-        self.contact_channel_index = 3
-
-                             
-        self.pair_cnn = nn.Sequential(
-            nn.Conv2d(in_channels, 64, kernel_size=3, padding=1),
-            nn.BatchNorm2d(64), nn.ReLU(inplace=True),
-            nn.Conv2d(64, 128, kernel_size=3, padding=1),
-            nn.BatchNorm2d(128), nn.ReLU(inplace=True),
-            nn.Conv2d(128, pair_hidden, kernel_size=3, padding=1),
-            nn.BatchNorm2d(pair_hidden), nn.ReLU(inplace=True),
-        )
-        self.node_proj = nn.Linear(pair_hidden * 2, node_hidden)
-        self.gnn_layers = nn.ModuleList(
-            [GCNLayer(node_hidden, node_hidden) for _ in range(gnn_layers)]
-        )
-        self.struct_attn_readout = AttentionReadout(node_dim=node_hidden)
-
-        self.readout = nn.Sequential(
-            nn.Linear(node_hidden, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
-            nn.Linear(256, 1),
-        )
-
-    def build_adj(self, pair_feat):
-        device = pair_feat.device
-        L = pair_feat.shape[-1]
-        contact = pair_feat[:, self.contact_channel_index, :, :]
-        adj = (contact > 0.5).float()
-        eye = torch.eye(L, device=device).unsqueeze(0)
-        A_tilde = adj + eye
-        D_tilde = A_tilde.sum(dim=-1, keepdim=True).pow(-0.5)
-        adj_norm = D_tilde * A_tilde * D_tilde.transpose(-2, -1)
-        return (adj_norm + adj_norm.transpose(-2, -1)) / 2
-
-    def forward(self, x_dict):
-        pair_feat = x_dict['pair']                 
-        valid_lengths = x_dict['length']
-        device = pair_feat.device
-        L = pair_feat.shape[-1]
-
-        idx = torch.arange(L, device=device).unsqueeze(0)
-        mask = (idx < valid_lengths.unsqueeze(1)).float()
-
-              
-        h_pair = self.pair_cnn(pair_feat)                             
-        node = torch.cat(
-            [h_pair.mean(dim=3), h_pair.mean(dim=2)],
-            dim=1
-        )                                                           
-        node = self.node_proj(node.permute(0, 2, 1))                        
-
-        adj_norm = self.build_adj(pair_feat)
-        h_gnn = node
-        for layer in self.gnn_layers:
-            h_gnn = layer(h_gnn, adj_norm)
-        g_struct = self.struct_attn_readout(h_gnn, mask)
-
-        logits = self.readout(g_struct).squeeze(1).unsqueeze(-1)          
-        return logits
+        return torch.bmm(attn_weights.unsqueeze(1), h).squeeze(1)
 
 class BranchPhyschem(nn.Module):
-       
-                                                       
-                                  
-       
-                                              
-                              
-       
-                     
-       
-    def __init__(self,
-                 seq_feat_dim: int = SEQ_FEAT_DIM,
-                 seq_hidden: int = 128):
+    def __init__(self, seq_feat_dim: int = SEQ_FEAT_DIM, seq_hidden: int = 128):
         super().__init__()
         self.seq_proj = nn.Linear(seq_feat_dim, seq_hidden)
+        self.seq_norm = nn.LayerNorm(seq_hidden)
         self.lstm = nn.LSTM(
             seq_hidden, seq_hidden,
             batch_first=True,
             bidirectional=True
         )
-        self.seq_attn_readout = AttentionReadout(node_dim=seq_hidden * 2)
+        out_dim = seq_hidden * 2
+        self.out_norm = nn.LayerNorm(out_dim)
+        self.seq_attn_readout = AttentionReadout(node_dim=out_dim)
         self.readout = nn.Sequential(
-            nn.Linear(seq_hidden * 2, 256),
-            nn.ReLU(inplace=True),
-            nn.Dropout(0.3),
-            nn.Linear(256, 1),
+            nn.Linear(out_dim * 4, 384),
+            nn.LayerNorm(384),
+            nn.GELU(),
+            nn.Dropout(0.30),
+            nn.Linear(384, 128),
+            nn.GELU(),
+            nn.Dropout(0.15),
+            nn.Linear(128, 1),
         )
 
     def forward(self, x_dict):
-        seq_feat = x_dict['seq']                 
-        valid_lengths = x_dict['length']
-        device = seq_feat.device
-        L = seq_feat.shape[1]
+        seq_feat = x_dict['seq']
+        mask = x_dict['mask'].float()
 
-        idx = torch.arange(L, device=device).unsqueeze(0)
-        mask = (idx < valid_lengths.unsqueeze(1)).float()
+        h_seq = self.seq_norm(F.gelu(self.seq_proj(seq_feat)))
+        h_seq = h_seq * mask.unsqueeze(-1)
+        h_lstm, _ = self.lstm(h_seq)
+        h_lstm = self.out_norm(h_lstm)
 
-        h_seq = F.relu(self.seq_proj(seq_feat))                          
-        packed_input = nn.utils.rnn.pack_padded_sequence(
-            h_seq,
-            valid_lengths.cpu(),
-            batch_first=True,
-            enforce_sorted=False,
-        )
-        packed_output, _ = self.lstm(packed_input)
-        h_lstm, _ = nn.utils.rnn.pad_packed_sequence(
-            packed_output,
-            batch_first=True,
-            total_length=L,
-        )                                                                  
-        g_seq = self.seq_attn_readout(h_lstm, mask)                      
+        g_attn = self.seq_attn_readout(h_lstm, mask)
+        den = mask.sum(dim=1, keepdim=True).clamp_min(1.0)
+        g_mean = (h_lstm * mask.unsqueeze(-1)).sum(dim=1) / den
 
-        logits = self.readout(g_seq).squeeze(1).unsqueeze(-1)          
-        return logits
+        h_for_max = h_lstm.masked_fill(mask.unsqueeze(-1) <= 0, -1e4)
+        g_max = h_for_max.max(dim=1).values
 
+        center_idx = min(15, h_lstm.shape[1] - 1)
+        g_center = h_lstm[:, center_idx, :]
+
+        g = torch.cat([g_attn, g_mean, g_max, g_center], dim=-1)
+        return self.readout(g)
 
 os.makedirs(CONFIG['OUT_DIR'], exist_ok=True)
 os.makedirs(CONFIG['MODEL_DIR'], exist_ok=True)
 
-        
 def set_global_seed(seed: int):
     os.environ.setdefault('CUBLAS_WORKSPACE_CONFIG', ':4096:8')
     random.seed(seed)
@@ -523,17 +806,16 @@ def set_global_seed(seed: int):
 
 set_global_seed(CONFIG['RANDOM_SEED'])
 
-                                                               
+
 CONFIG.update({
-                                       
-    'NUM_WORKERS': max(32, (os.cpu_count() or 8)//2),
-    'PREFETCH_FACTOR': 4,
+    'NUM_WORKERS_ESM': 0,
+
+
+    'NUM_WORKERS_OTHER': 0,
+    'PREFETCH_FACTOR': 2,
     'PERSISTENT_WORKERS': True,
-    'PIN_MEMORY': True,
-    'PIN_MEMORY_DEVICE': 'cuda',
+    'PIN_MEMORY': str(CONFIG.get('DEVICE', 'cpu')).startswith('cuda'),
     'NON_BLOCKING': True,
-                                      
-                                                
     'ALLOW_TF32': False,
     'CUDNN_BENCHMARK': False,
     'TORCH_COMPILE': False,
@@ -559,14 +841,16 @@ def enable_speedups():
     torch.backends.cudnn.benchmark = cudnn_benchmark
     torch.backends.cudnn.deterministic = deterministic
     try:
-        torch.use_deterministic_algorithms(deterministic, warn_only=True)
-    except Exception:
-        pass
+        torch.use_deterministic_algorithms(
+            deterministic,
+            warn_only=not bool(CONFIG.get('STRICT_REPRODUCIBILITY', True)),
+        )
+    except TypeError:
 
+        torch.use_deterministic_algorithms(deterministic)
 
 def amp_is_enabled() -> bool:
     return bool(CONFIG.get('AMP', False) and str(CONFIG.get('DEVICE', 'cpu')).startswith('cuda') and torch.cuda.is_available())
-
 
 class _NoOpGradScaler:
     def __init__(self):
@@ -583,7 +867,6 @@ class _NoOpGradScaler:
 
     def unscale_(self, optimizer):
         return None
-
 
 def build_grad_scaler():
     enabled = amp_is_enabled()
@@ -613,7 +896,6 @@ def build_grad_scaler():
     print('[WARN] AMP=True，但当前 PyTorch 不支持 GradScaler；自动回退到 FP32。')
     return _NoOpGradScaler()
 
-
 def get_autocast_context():
     if not amp_is_enabled():
         return nullcontext()
@@ -638,329 +920,402 @@ def get_autocast_context():
     print('[WARN] AMP=True，但当前 PyTorch 不支持 autocast；自动回退到 FP32。')
     return nullcontext()
 
+def smooth_binary_targets(y: torch.Tensor) -> torch.Tensor:
+    eps = float(CONFIG.get('LABEL_SMOOTH', 0.0) or 0.0)
+    if eps <= 0:
+        return y
+    return y * (1.0 - eps) + 0.5 * eps
 
-def backward_with_optional_amp(loss, optimizer, scaler):
+def backward_with_optional_amp(loss, optimizer, scaler, model=None):
+    clip = float(CONFIG.get('GRAD_CLIP_NORM', 0.0) or 0.0)
     if getattr(scaler, 'enabled', False):
         scaler.scale(loss).backward()
+        if clip > 0 and model is not None:
+            scaler.unscale_(optimizer)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         scaler.step(optimizer)
         scaler.update()
     else:
         loss.backward()
+        if clip > 0 and model is not None:
+            torch.nn.utils.clip_grad_norm_(model.parameters(), clip)
         optimizer.step()
 
+def is_esm_branch(branch_name: str) -> bool:
+    return str(branch_name).lower() in {
+        'esm_cqt',
+        'esm_sitecontrast',
+        'esm_sitecontrast_v2',
+    }
 
-BRANCH_ORDER = ['physchem', 'esm', 'kmer', 'esmfold']
+def branch_batch_size(branch_name: str) -> int:
+    if branch_name == 'structure':
+        return int(CONFIG['BATCH_SIZE_STRUCTURE'])
+    if branch_name in {'esm_sitecontrast', 'esm_sitecontrast_v2'}:
+        return int(CONFIG['BATCH_SIZE_ESM_SITECONTRAST'])
+    if branch_name == 'esm_cqt':
+        return int(CONFIG['BATCH_SIZE_ESM_CQT'])
+    if branch_name in {'physchem', 'physchem_pca'}:
+        return int(CONFIG['BATCH_SIZE_PHYSCHEM'])
+    if branch_name == 'kmer':
+        return int(CONFIG['BATCH_SIZE_KMER'])
+    raise ValueError(branch_name)
 
-def get_enabled_branches() -> List[str]:
-       
-                                                  
-                     
-       
-    cfg = CONFIG.get('ENABLED_BRANCHES', {})
-    enabled = [b for b in BRANCH_ORDER if cfg.get(b, False)]
-    if not enabled:
-        enabled = BRANCH_ORDER[:]             
-    return enabled
+def branch_lr(branch_name: str) -> float:
+    if branch_name == 'structure':
+        return float(CONFIG['LR_STRUCTURE'])
+    if branch_name in {'esm_sitecontrast', 'esm_sitecontrast_v2'}:
+        return float(CONFIG['LR_ESM_SITECONTRAST'])
+    if branch_name == 'esm_cqt':
+        return float(CONFIG['LR_ESM_CQT'])
+    if branch_name in {'physchem', 'physchem_pca'}:
+        return float(CONFIG['LR_PHYSCHEM'])
+    if branch_name == 'kmer':
+        return float(CONFIG['LR_KMER'])
+    raise ValueError(branch_name)
 
+def branch_neg_ratio(branch_name: str):
+    return CONFIG['NEG_POS_RATIO_KMER'] if branch_name == 'kmer' else CONFIG['NEG_POS_RATIO']
 
-def loader_kwargs():
-    nw = int(CONFIG.get('NUM_WORKERS', 0) or 0)
+def branch_patience(branch_name: str) -> int:
+    if branch_name == 'structure':
+        return int(CONFIG['EARLY_STOP_PATIENCE_STRUCTURE'])
+    if branch_name == 'kmer':
+        return int(CONFIG['EARLY_STOP_PATIENCE_KMER'])
+    return int(CONFIG['EARLY_STOP_PATIENCE'])
+
+def branch_weight_decay(branch_name: str) -> float:
+    if branch_name == 'structure':
+        return float(CONFIG['WEIGHT_DECAY_STRUCTURE'])
+    if branch_name in {'esm_sitecontrast', 'esm_sitecontrast_v2'}:
+        return float(CONFIG['WEIGHT_DECAY_ESM_SITECONTRAST'])
+    if branch_name == 'kmer':
+        return float(CONFIG['WEIGHT_DECAY_KMER'])
+    return float(CONFIG['WEIGHT_DECAY'])
+
+def branch_rank_loss_cfg(branch_name: str) -> Tuple[float, int, int]:
+    if branch_name == 'structure':
+        return (
+            float(CONFIG['STRUCTURE_RANK_LOSS_ALPHA']),
+            int(CONFIG['STRUCTURE_RANK_WARMUP_EPOCHS']),
+            int(CONFIG['STRUCTURE_RANK_MAX_PAIRS']),
+        )
+    if branch_name == 'esm_sitecontrast_v2':
+        return (
+            float(CONFIG['ESM_SC2_RANK_LOSS_ALPHA']),
+            int(CONFIG['ESM_SC2_RANK_WARMUP_EPOCHS']),
+            int(CONFIG['ESM_SC2_RANK_MAX_PAIRS']),
+        )
+    if branch_name == 'kmer':
+        return (
+            float(CONFIG['KMER_RANK_LOSS_ALPHA']),
+            int(CONFIG['KMER_RANK_WARMUP_EPOCHS']),
+            int(CONFIG['KMER_RANK_MAX_PAIRS']),
+        )
+    return (0.0, 0, 0)
+
+def loader_kwargs(branch_name: Optional[str] = None):
+    if str(branch_name).lower() == 'structure':
+        nw = 0
+    elif is_esm_branch(branch_name) and CONFIG.get('ESM_CACHE_IN_RAM', True):
+        nw = int(CONFIG.get('NUM_WORKERS_ESM', 0) or 0)
+    else:
+        nw = int(CONFIG.get('NUM_WORKERS_OTHER', 0) or 0)
+
     kw = dict(
         num_workers=nw,
         pin_memory=bool(CONFIG.get('PIN_MEMORY', True)),
     )
     if nw > 0:
         kw['persistent_workers'] = bool(CONFIG.get('PERSISTENT_WORKERS', True))
-        kw['prefetch_factor']    = int(CONFIG.get('PREFETCH_FACTOR', 2))
-        if 'PIN_MEMORY_DEVICE' in CONFIG:
-            kw['pin_memory_device'] = CONFIG['PIN_MEMORY_DEVICE']
+        kw['prefetch_factor'] = int(CONFIG.get('PREFETCH_FACTOR', 2))
     return kw
 
 enable_speedups()
-         
-             
-                      
-                    
-                         
-                 
-         
-            
-                       
-                   
-                        
 
-                               
-                    
-                               
+if (
+    CONFIG.get('SUPPRESS_DETERMINISTIC_WARNINGS', False)
+    and not CONFIG.get('STRICT_REPRODUCIBILITY', True)
+):
+    warnings.filterwarnings(
+        "ignore",
+        message=r".*does not have a deterministic implementation.*",
+        category=UserWarning,
+    )
+
+
+
+_ESM_RAM_STORE = {}
+
+def get_esm_ram_store(h5_path: str):
+    if not CONFIG.get('ESM_CACHE_IN_RAM', True):
+        return None
+
+    if h5_path in _ESM_RAM_STORE:
+        return _ESM_RAM_STORE[h5_path]
+
+    if not os.path.exists(h5_path):
+        raise FileNotFoundError(f"ESM_H5 不存在: {h5_path}")
+
+    with h5py.File(h5_path, 'r') as f:
+        if 'window_emb' not in f or 'uniprotid' not in f:
+            raise RuntimeError("embedding.h5 缺少 window_emb 或 uniprotid")
+
+        ds = f['window_emb']
+        est_gb = float(np.prod(ds.shape) * ds.dtype.itemsize) / (1024 ** 3)
+        print(
+            f"[ESM cache] window_emb={ds.shape}, dtype={ds.dtype}, "
+            f"compression={ds.compression}, raw≈{est_gb:.2f} GB"
+        )
+
+        max_gb = float(CONFIG.get('ESM_CACHE_MAX_GB', 6.0))
+        if est_gb > max_gb:
+            print(
+                f"[ESM cache][WARN] {est_gb:.2f} GB > ESM_CACHE_MAX_GB={max_gb:.2f}; "
+                "不载入RAM，回退HDF5读取。"
+            )
+            return None
+
+        print("[ESM cache] 正在一次性读取/解压到 CPU RAM；这一步只发生一次……")
+        emb = f['window_emb'][...]
+        valid_mask = (
+            f['valid_mask'][...].astype(np.uint8, copy=False)
+            if 'valid_mask' in f else None
+        )
+        raw_uids = f['uniprotid'][...]
+
+    uids = [
+        u.decode() if isinstance(u, (bytes, bytearray)) else str(u)
+        for u in raw_uids
+    ]
+    uid2idx = {u: i for i, u in enumerate(uids)}
+
+    store = {
+        'window_emb': emb,
+        'valid_mask': valid_mask,
+        'uids': uids,
+        'uid2idx': uid2idx,
+    }
+    _ESM_RAM_STORE[h5_path] = store
+
+    total_gb = emb.nbytes / (1024 ** 3)
+    if valid_mask is not None:
+        total_gb += valid_mask.nbytes / (1024 ** 3)
+    print(f"[ESM cache] 完成，RAM占用约 {total_gb:.2f} GB。之后 epoch 不再解压 gzip。")
+    return store
+
+_build_uid2idx_h5 = build_uid2idx
+
+def build_uid2idx(h5_path: str) -> dict:
+    store = get_esm_ram_store(h5_path)
+    if store is not None:
+        return store['uid2idx']
+    return _build_uid2idx_h5(h5_path)
+
+
+
+def _resume_signature(branch: str, repeat: int, fold: Optional[int], final: bool = False) -> str:
+    keys = [
+        'CSV_PATH', 'ESM_H5', 'AAINDEX1_PATH', 'AAINDEX_PCA_PATH',
+        'PDB_DIR',
+        'RANDOM_SEED', 'SPLIT_SEED', 'CV_SEED', 'N_REPEATS', 'N_FOLDS', 'TEST_RATIO',
+        'EPOCHS', 'EPOCHS_STRUCTURE',
+        'BATCH_SIZE_PHYSCHEM', 'BATCH_SIZE_ESM_CQT', 'BATCH_SIZE_ESM_SITECONTRAST',
+        'BATCH_SIZE_KMER', 'BATCH_SIZE_STRUCTURE',
+        'LR_PHYSCHEM', 'LR_ESM_CQT', 'LR_ESM_SITECONTRAST', 'LR_KMER', 'LR_STRUCTURE',
+        'WEIGHT_DECAY', 'WEIGHT_DECAY_ESM_SITECONTRAST', 'WEIGHT_DECAY_KMER', 'WEIGHT_DECAY_STRUCTURE',
+        'NEG_POS_RATIO', 'NEG_POS_RATIO_KMER', 'NEG_SAMPLE_SEED',
+        'PHYSCHEM_PCA_DIM',
+        'ESM_CQT_DIM', 'ESM_CQT_HEADS', 'ESM_CQT_LAYERS', 'ESM_CQT_FFN', 'ESM_CQT_DROPOUT',
+        'ESM_CQT_LOCAL_RADIUS', 'ESM_CQT_SIDE_RADIUS',
+        'ESM_SC_DIM', 'ESM_SC_REL_DIM', 'ESM_SC_RADII', 'ESM_SC_DROPOUT', 'ESM_SC_USE_POSITION_EMB',
+        'ESM_SC2_DIM', 'ESM_SC2_REL_DIM', 'ESM_SC2_RADII', 'ESM_SC2_DROPOUT',
+        'ESM_SC2_RANK_LOSS_ALPHA', 'ESM_SC2_RANK_WARMUP_EPOCHS', 'ESM_SC2_RANK_MAX_PAIRS',
+        'KMERS', 'KMER_EMBED', 'KMER_CONV_CHANNELS', 'KMER_MULTI_KERNELS', 'KMER_HEAD_DIM',
+        'KMER_LOCAL_RADIUS', 'KMER_MIN_COUNT', 'KMER_FOLD_MIN_COUNT', 'DROPOUT_KMER',
+        'KMER_RANK_LOSS_ALPHA', 'KMER_RANK_WARMUP_EPOCHS', 'KMER_RANK_MAX_PAIRS',
+        'STRUCTURE_CONTACT_THRESH', 'STRUCTURE_EDGE_DIM', 'STRUCTURE_EDGE_LAYERS',
+        'STRUCTURE_DROPOUT', 'STRUCTURE_CHEM_HIDDEN', 'STRUCTURE_NODE_SCALAR_DIM',
+        'STRUCTURE_EDGE_AUG_DIM', 'STRUCTURE_SHELL_RADII', 'STRUCTURE_SHELL_ATTN_DIM',
+        'STRUCTURE_HEAD_HIDDEN', 'STRUCTURE_DISTANCE_SCALE', 'STRUCTURE_QUALITY_DIM',
+        'STRUCTURE_RANK_LOSS_ALPHA', 'STRUCTURE_RANK_WARMUP_EPOCHS', 'STRUCTURE_RANK_MAX_PAIRS',
+        'FOLD_SCORE_ALIGNMENT', 'USE_ALIGNED_FOR_FUSION',
+        'META_N_FOLDS', 'META_SHARED_SEED', 'META_C_GRID', 'META_LOGIT_CLIP',
+        'FUSION_CANDIDATES', 'GROUP_FUSION_C', 'GROUP_FUSION_LOGIT_CLIP',
+        'FUSION_SELECTION_PRIMARY', 'FUSION_SELECTION_SECONDARY',
+        'STRICT_REPRODUCIBILITY', 'HASH_INPUT_CONTENTS',
+        'RESUME_VERSION',
+    ]
+    payload = {
+        'recipe': 'DeepPalm_V14_train_and_auto_fusion_reproducible',
+        'branch': branch,
+        'repeat': int(repeat),
+        'fold': None if fold is None else int(fold),
+        'final': bool(final),
+        'config': {k: CONFIG.get(k) for k in keys},
+    }
+    text = json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(text.encode('utf-8')).hexdigest()
+
+def _atomic_torch_save(obj, path: str):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp'
+    torch.save(obj, tmp)
+    os.replace(tmp, path)
+
+def safe_torch_load(path: str, map_location='cpu'):
+    try:
+        return torch.load(path, map_location=map_location, weights_only=False)
+    except TypeError:
+        return torch.load(path, map_location=map_location)
+
+def _atomic_npz_save(path: str, **arrays):
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    tmp = path + '.tmp.npz'
+    np.savez(tmp, **arrays)
+    os.replace(tmp, path)
+
+def _capture_rng_state():
+    state = {
+        'python': random.getstate(),
+        'numpy': np.random.get_state(),
+        'torch_cpu': torch.get_rng_state(),
+    }
+    if torch.cuda.is_available():
+        state['torch_cuda'] = torch.cuda.get_rng_state_all()
+    return state
+
+def _restore_rng_state(state):
+    if not state:
+        return
+    try:
+        random.setstate(state['python'])
+        np.random.set_state(state['numpy'])
+        torch.set_rng_state(state['torch_cpu'])
+        if torch.cuda.is_available() and 'torch_cuda' in state:
+            torch.cuda.set_rng_state_all(state['torch_cuda'])
+    except Exception as e:
+        print(f"[Resume][WARN] RNG state 恢复失败，继续训练: {e}")
+
+def _scaler_state_dict(scaler):
+    if hasattr(scaler, 'state_dict'):
+        try:
+            return scaler.state_dict()
+        except Exception:
+            return None
+    return None
+
+def _load_scaler_state(scaler, state):
+    if state is None or not hasattr(scaler, 'load_state_dict'):
+        return
+    try:
+        scaler.load_state_dict(state)
+    except Exception as e:
+        print(f"[Resume][WARN] GradScaler state 恢复失败: {e}")
+
+def _fold_paths(branch: str, repeat: int, fold_num: int):
+    save_dir = os.path.join(CONFIG['MODEL_DIR'], f"repeat{repeat}", branch)
+    os.makedirs(save_dir, exist_ok=True)
+    stem = f"{branch}_rep{repeat}_fold{fold_num}"
+    return {
+        'best': os.path.join(save_dir, stem + "_best.pth"),
+        'last': os.path.join(save_dir, stem + "_last_resume.pth"),
+        'done': os.path.join(save_dir, stem + "_DONE.npz"),
+    }
+
+def _save_epoch_resume(path, signature, epoch, model, optimizer, scheduler,
+                       scaler, best_metric, no_improve):
+    if not CONFIG.get('SAVE_RESUME_EVERY_EPOCH', True):
+        return
+    obj = {
+        'signature': signature,
+        'epoch': int(epoch),
+        'model_state_dict': model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'scheduler_state_dict': scheduler.state_dict() if scheduler is not None else None,
+        'scaler_state_dict': _scaler_state_dict(scaler),
+        'best_metric': float(best_metric),
+        'no_improve': int(no_improve),
+        'rng_state': _capture_rng_state(),
+    }
+    _atomic_torch_save(obj, path)
+
+def _try_load_epoch_resume(path, signature, model, optimizer, scheduler, scaler, device):
+    if not CONFIG.get('RESUME', True) or not os.path.exists(path):
+        return None
+    try:
+        ckpt = safe_torch_load(path, map_location=device)
+    except Exception as e:
+        print(f"[Resume][WARN] 无法读取 {path}: {e}")
+        return None
+
+    if ckpt.get('signature') != signature:
+        print(f"[Resume] 找到旧checkpoint但参数signature不同，忽略: {path}")
+        return None
+
+    model.load_state_dict(ckpt['model_state_dict'])
+    optimizer.load_state_dict(ckpt['optimizer_state_dict'])
+    if scheduler is not None and ckpt.get('scheduler_state_dict') is not None:
+        scheduler.load_state_dict(ckpt['scheduler_state_dict'])
+    _load_scaler_state(scaler, ckpt.get('scaler_state_dict'))
+    _restore_rng_state(ckpt.get('rng_state'))
+
+    print(f"[Resume] 从 epoch {int(ckpt['epoch']) + 1} 继续: {path}")
+    return ckpt
+
+
+
 def _safe_div(a, b):
     return float(a) / float(b) if (b is not None and b != 0) else 0.0
 
 def bin_metrics(y_true: np.ndarray, y_prob: np.ndarray, thr: float = 0.5) -> Dict[str, float]:
-    y_true = y_true.astype(int)
+    y_true = np.asarray(y_true).astype(int)
+    y_prob = np.asarray(y_prob).astype(float)
     y_pred = (y_prob >= thr).astype(int)
+
     TP = int(((y_pred == 1) & (y_true == 1)).sum())
     TN = int(((y_pred == 0) & (y_true == 0)).sum())
     FP = int(((y_pred == 1) & (y_true == 0)).sum())
     FN = int(((y_pred == 0) & (y_true == 1)).sum())
+
     P = TP + FN
     N = TN + FP
+
     sen = _safe_div(TP, P)
     spe = _safe_div(TN, N)
     acc = _safe_div(TP + TN, P + N)
-    auc = float(roc_auc_score(y_true, y_prob)) if SKLEARN_OK and len(np.unique(y_true)) > 1 else float('nan')
-    return {'tp': TP, 'tn': TN, 'fp': FP, 'fn': FN, 'sen': sen, 'spe': spe, 'acc': acc, 'auc': auc}
+    precision = _safe_div(TP, TP + FP)
+    f1 = _safe_div(2 * precision * sen, precision + sen)
+    fpr = _safe_div(FP, N)
+    bacc = 0.5 * (sen + spe)
+
+    den = math.sqrt(
+        max(1, TP + FP) *
+        max(1, TP + FN) *
+        max(1, TN + FP) *
+        max(1, TN + FN)
+    )
+    mcc = ((TP * TN - FP * FN) / den) if den > 0 else 0.0
+
+    auc = float('nan')
+    auprc = float('nan')
+    if SKLEARN_OK and len(np.unique(y_true)) > 1:
+        auc = float(roc_auc_score(y_true, y_prob))
+        auprc = float(average_precision_score(y_true, y_prob))
+
+    return {
+        'tp': TP, 'tn': TN, 'fp': FP, 'fn': FN,
+        'sen': sen, 'recall': sen, 'spe': spe, 'acc': acc,
+        'precision': precision, 'f1': f1, 'mcc': mcc,
+        'fpr': fpr, 'bacc': bacc,
+        'auc': auc, 'auprc': auprc,
+    }
 
 def calc_metrics(y_true: np.ndarray, y_prob: np.ndarray) -> Dict[str, float]:
-    m = bin_metrics(y_true, y_prob, thr=CONFIG['METRIC_THRESHOLD'])
-    return {'auc': m['auc'], 'acc': m['acc'], 'sen': m['sen'], 'spe': m['spe']}
-
-def make_scores(uids, labels, probs, thr: float = 0.5) -> pd.DataFrame:
-    labels = np.asarray(labels).astype(int)
-    probs = np.asarray(probs).astype(float)
-    preds = (probs >= thr).astype(int)
-    conf = np.maximum(probs, 1 - probs)
-    correct = (preds == labels).astype(float)
-    score = np.where(
-        correct > 0,
-        CONFIG['SCORE_RIGHT_ALPHA'] * conf,
-        -CONFIG['SCORE_WRONG_BETA'] * conf
-    )
-    return pd.DataFrame({
-        'uniprotid': list(uids),
-        'label': labels,
-        'prob': probs,
-        'pred': preds,
-        'conf_score': score,
-    })
-
-
-def plot_roc_multi(save_path: str,
-                   curves: Dict[str, Tuple[np.ndarray, np.ndarray]],
-                   title: str = 'ROC curves (multi)'):
-    if not SKLEARN_OK:
-        print("[WARN] sklearn 未安装，跳过 ROC 绘图:", save_path)
-        return
-
-    from sklearn.metrics import roc_curve
-
-    plt.figure(figsize=(6.4, 5.0))
-    for name, (yt, yp) in curves.items():
-        yt = np.asarray(yt).astype(int)
-        yp = np.asarray(yp).astype(float)
-        if len(np.unique(yt)) < 2:
-            continue
-        fpr, tpr, _ = roc_curve(yt, yp)
-        auc = roc_auc_score(yt, yp)
-        plt.plot(fpr, tpr, lw=1.8, label=f"{name} (AUC={auc:.3f})")
-
-    plt.plot([0, 1], [0, 1], 'k--', lw=1)
-    plt.xlim([0.0, 1.0])
-    plt.ylim([0.0, 1.02])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title(title)
-    plt.legend(loc='lower right', fontsize=9)
-    plt.grid(alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-
-
-def plot_auc_errorbars_by_method(save_path: str,
-                                 metrics_df: pd.DataFrame,
-                                 n_repeats: int):
-    if metrics_df.empty:
-        print("[WARN] metrics_df 为空，跳过误差棒图:", save_path)
-        return
-
-    df = metrics_df[metrics_df['set'] == 'test'].copy()
-    if df.empty:
-        print("[WARN] metrics_df 中没有 set=='test' 的记录，跳过误差棒图。")
-        return
-
-    order = sorted(df['method'].unique().tolist())
-    agg = df.groupby('method')['auc'].agg(['mean', 'std']).reindex(order)
-
-    x = np.arange(len(order))
-    plt.figure(figsize=(8, 4))
-    yerr = agg['std'].values if n_repeats > 1 else None
-    plt.errorbar(x, agg['mean'].values,
-                 yerr=yerr,
-                 fmt='o', capsize=5 if n_repeats > 1 else 0)
-
-    for i, m in enumerate(order):
-        plt.text(x[i],
-                 agg['mean'].iloc[i] + 0.01,
-                 f"{agg['mean'].iloc[i]:.3f}",
-                 ha='center', va='bottom', fontsize=9)
-
-    plt.xticks(x, order, rotation=0)
-    plt.ylim(0, 1.02)
-    plt.ylabel('AUC')
-    plt.title('Test AUC by method (mean±std over repeats)')
-    plt.grid(axis='y', alpha=0.3)
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-
-
-def plot_metrics_bars_by_method(save_path: str,
-                                metrics_by_method: Dict[str, Dict[str, float]],
-                                methods: List[str],
-                                title: str = 'Metrics comparison'):
-    metric_names = ['sen', 'spe', 'acc', 'auc']
-    x = np.arange(len(methods))
-    width = 0.18
-
-    plt.figure(figsize=(max(8, 1.5 * len(methods)), 4.5))
-    for i, mname in enumerate(metric_names):
-        vals = [float(metrics_by_method[m][mname]) for m in methods]
-        plt.bar(x + (i - 1.5) * width, vals, width=width, label=mname.upper())
-        for j, v in enumerate(vals):
-            plt.text(x[j] + (i - 1.5) * width,
-                     v + 0.01,
-                     f"{v:.2f}",
-                     ha='center', va='bottom', fontsize=8)
-
-    plt.xticks(x, methods, rotation=0)
-    plt.ylim(0, 1.05)
-    plt.ylabel('Value')
-    plt.title(title)
-    plt.grid(axis='y', alpha=0.3, linestyle='--')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-
-def plot_species_metrics(save_path: str,
-                         df_sp: pd.DataFrame,
-                         title: str = 'Per-species metrics'):
-       
-                                         
-                                                         
-       
-    metric_names = ['sen', 'spe', 'acc', 'auc']
-    species = df_sp['species'].tolist()
-    x = np.arange(len(species))
-    width = 0.18
-
-    plt.figure(figsize=(max(8, 1.2 * len(species)), 4.5))
-    for i, m in enumerate(metric_names):
-        vals = df_sp[m].values
-        plt.bar(x + (i - 1.5) * width, vals, width=width, label=m.upper())
-        for j, v in enumerate(vals):
-            plt.text(
-                x[j] + (i - 1.5) * width,
-                v + 0.005,
-                f"{v:.2f}",
-                ha='center',
-                va='bottom',
-                fontsize=7
-            )
-
-    plt.xticks(x, species, rotation=45, ha='right')
-    plt.ylim(0, 1.05)
-    plt.ylabel('Metric value')
-    plt.title(title)
-    plt.grid(axis='y', alpha=0.3, linestyle='--')
-    plt.legend()
-    plt.tight_layout()
-    plt.savefig(save_path, dpi=300)
-    plt.close()
-
+    return bin_metrics(y_true, y_prob, thr=CONFIG['METRIC_THRESHOLD'])
 
 def _base_uid(uid: str) -> str:
     return str(uid).strip().split('-')[0]
-
-
-def _load_species_map_for_final(path: str) -> Dict[str, str]:
-    df = pd.read_csv(path, header=None, usecols=[0, 1],
-                     names=['uidpos', 'species'])
-    df['uidpos'] = df['uidpos'].astype(str).str.strip()
-    df['species'] = df['species'].astype(str).str.strip()
-    mp = {}
-    for _, r in df.iterrows():
-        uid_full = r['uidpos']
-        sp = r['species']
-        mp[uid_full] = sp
-        mp[_base_uid(uid_full)] = sp
-    return mp
-
-
-def species_stats_and_roc(uids: List[str],
-                          labels: np.ndarray,
-                          probs: np.ndarray,
-                          species_csv: str,
-                          out_dir: str,
-                          min_n: int = 100):
-    if (not species_csv) or (not os.path.exists(species_csv)):
-        print("[Info] SPECIES_CSV 不存在，跳过物种统计。")
-        return
-    if not SKLEARN_OK:
-        print("[Info] 未安装 sklearn，跳过物种统计。")
-        return
-
-    from sklearn.metrics import roc_curve                       
-
-    sp_map = _load_species_map_for_final(species_csv)
-    labels = np.asarray(labels).astype(int)
-    probs = np.asarray(probs).astype(float)
-
-           
-    bucket: Dict[str, Dict[str, List[float]]] = {}
-    for uid, y, p in zip(uids, labels, probs):
-        sp = sp_map.get(uid) or sp_map.get(_base_uid(uid))
-        if sp is None:
-            continue
-        bucket.setdefault(sp, {'y': [], 'p': []})
-        bucket[sp]['y'].append(int(y))
-        bucket[sp]['p'].append(float(p))
-
-    rows = []
-    curves = {}
-    for sp, d in bucket.items():
-        y = np.array(d['y'], dtype=int)
-        p = np.array(d['p'], dtype=float)
-        if len(y) <= min_n:
-            continue
-        if len(np.unique(y)) < 2:
-            continue
-
-                                       
-        mets = calc_metrics(y, p)
-        rows.append({
-            'species': sp,
-            'n': len(y),
-            'sen': mets['sen'],
-            'spe': mets['spe'],
-            'acc': mets['acc'],
-            'auc': mets['auc'],
-        })
-        curves[sp] = (y, p)
-
-    if not curves:
-        print(f"[Info] 没有物种满足 N>{min_n} 的条件，跳过物种统计。")
-        return
-
-               
-    df_sp = pd.DataFrame(rows).sort_values('auc', ascending=False)
-    df_sp.to_csv(os.path.join(out_dir, 'species_metrics_FINAL.csv'), index=False)
-
-                                         
-    plot_species_metrics(
-        os.path.join(out_dir, 'species_metrics_FINAL.svg'),
-        df_sp,
-        title=f"Per-species metrics (N>{min_n})"
-    )
-
-                                         
-    plot_roc_multi(
-        os.path.join(out_dir, 'species_roc_FINAL.svg'),
-        curves,
-        title=f"Species ROC (N>{min_n})"
-    )
-    print("[Save] 物种统计已输出到:", out_dir)
-
 
 def summarize_and_dedup(samples: List['Sample']) -> List['Sample']:
     total = len(samples)
@@ -987,91 +1342,11 @@ def summarize_and_dedup(samples: List['Sample']) -> List['Sample']:
     print(f"[去重后] 总数={total2}  阳性={pos2}  阴性={neg2}  正例占比={pos2/max(1,total2):.2%}")
     return samples_new
 
-def _project_simplex_nonneg(w: np.ndarray) -> np.ndarray:
-    w = np.maximum(w, 0)
-    s = w.sum()
-    if s == 0:
-        w[0] = 1.0
-        return w
-    return w / s
-
-def _project_simplex_floor(w: np.ndarray, floor: float) -> np.ndarray:
-    n = w.shape[0]
-    if floor <= 0:
-        return _project_simplex_nonneg(w.copy())
-    v = np.maximum(w - floor, 0.0)
-    S = v.sum()
-    target = max(1.0 - n * floor, 1e-12)
-    if S <= 1e-12:
-        v = np.zeros_like(v); v[0] = target
-    else:
-        v = v * (target / S)
-    return v + floor
-
-def grid_search_blend_weights(oof_preds: np.ndarray,
-                              y_true: np.ndarray,
-                              step: float = 0.1,
-                              refine: bool = True,
-                              min_w: float = 0.1) -> Tuple[np.ndarray, float]:
-       
-                                  
-                                    
-       
-    from itertools import product
-
-    n_models = oof_preds.shape[1]
-    if n_models < 1 or n_models > 5:
-        raise ValueError(f"grid_search_blend_weights 目前只支持 1~5 个分支, got {n_models}")
-    if min_w * n_models > 1 + 1e-12:
-        raise ValueError(f"min_w={min_w} 过大 (n_models={n_models})")
-
-                           
-    if n_models == 1:
-        w = np.array([1.0], dtype=np.float32)
-        yb = oof_preds[:, 0]
-        auc = roc_auc_score(y_true, yb) if SKLEARN_OK else calc_metrics(y_true, yb)['auc']
-        return w, float(auc)
-
-    ws = np.arange(min_w, 1.0 + 1e-12, step)
-    best_auc, best_w = -1.0, None
-
-                                                  
-    for prefix in product(ws, repeat=n_models - 1):
-        s = float(sum(prefix))
-        w_last = 1.0 - s
-        if w_last < min_w - 1e-12 or w_last > 1.0 + 1e-12:
-            continue
-        w = np.array(list(prefix) + [w_last], dtype=np.float64)
-        yb = (oof_preds * w[None, :]).sum(axis=1)
-        auc = roc_auc_score(y_true, yb) if SKLEARN_OK else calc_metrics(y_true, yb)['auc']
-        if auc > best_auc:
-            best_auc, best_w = float(auc), w.copy()
-
-                              
-    if refine and best_w is not None:
-        local = max(step / 2.0, 0.02)
-        cand = []
-        for deltas in product((-local, 0.0, local), repeat=n_models):
-            w = best_w.copy() + np.array(deltas, dtype=np.float64)
-            w = _project_simplex_floor(w, floor=min_w)
-            cand.append(w)
-        uniq = np.unique(np.round(np.stack(cand, 0), 6), axis=0)
-        for w in uniq:
-            yb = (oof_preds * w[None, :]).sum(axis=1)
-            auc = roc_auc_score(y_true, yb) if SKLEARN_OK else calc_metrics(y_true, yb)['auc']
-            if auc > best_auc:
-                best_auc, best_w = float(auc), w.copy()
-
-    return best_w.astype(np.float32), best_auc
 
 
-
-                               
-         
-                               
 def clean_seq(s: str) -> str:
     s = (s or '').strip().upper()
-    allow = set(list('ACDEFGHIKLMNPQRSTVWY') + ['X'])
+    allow = set(list('ACDEFGHIKLMNPQRSTVWY') + ['X', '*'])
     return ''.join(ch if ch in allow else 'X' for ch in s)
 
 def ensure_len_31(s: str) -> str:
@@ -1086,94 +1361,13 @@ def ensure_len_31(s: str) -> str:
         return s
     lpad = (31 - len(s))//2
     rpad = 31 - len(s) - lpad
-    return 'X'*lpad + s + 'X'*rpad
+    return '*'*lpad + s + '*'*rpad
 
-                  
+
 CONS_GROUPS = [list('ST'), list('NQ'), list('DE'), list('KR'), list('FWY'), list('ILVM'), list('AG'), list('PH')]
 CONS_MAP = {c:g for g in CONS_GROUPS for c in g}
 
-def aug_mutate_seq(seq: str, max_muts: int = 2, keep_center_c=True) -> str:
-    seq = list(ensure_len_31(clean_seq(seq)))
-    idxs = list(range(31)); center = 15
-    if keep_center_c and center in idxs:
-        idxs.remove(center)
-    n = random.randint(1, max(1, max_muts))
-    choose = random.sample(idxs, k=min(n, len(idxs)))
-    for i in choose:
-        aa = seq[i]
-        cand = CONS_MAP.get(aa, None)
-        if cand:
-            rep = random.choice([x for x in cand if x!=aa])
-        else:
-            pool = list('ACDEFGHIKLMNPQRSTVWY')
-            if keep_center_c and i==center:
-                pool = [x for x in pool if x!='C']
-            rep = random.choice(pool)
-        seq[i] = rep
-    return ''.join(seq)
 
-def physchem_from_seq(seq: str) -> List[float]:
-    if not BIOPY_OK:
-        return [0.0]*7
-    pa = ProteinAnalysis(seq.replace('X','A'))
-    mw   = pa.molecular_weight()
-    pI   = pa.isoelectric_point()
-    aro  = pa.aromaticity()
-    gravy= pa.gravy()
-    helix, turn, sheet = pa.secondary_structure_fraction()
-    return [float(mw), float(pI), float(aro), float(gravy), float(helix), float(turn), float(sheet)]
-
-                                    
-
-_PDB_UID_MAP_CACHE: Dict[str, Dict[str, str]] = {}
-
-def _strip_uid_suffix(uid: str) -> str:
-    u = str(uid).strip()
-    return u.split('-')[0]
-
-def build_pdb_uid_map(pdb_dir: str) -> Dict[str, str]:
-       
-                                            
-       
-    global _PDB_UID_MAP_CACHE
-    if pdb_dir in _PDB_UID_MAP_CACHE:
-        return _PDB_UID_MAP_CACHE[pdb_dir]
-
-    if not os.path.exists(pdb_dir):
-        raise FileNotFoundError(f"PDB_DIR 不存在: {pdb_dir}")
-
-    mp: Dict[str, str] = {}
-
-    if os.path.isdir(pdb_dir):
-        for fn in os.listdir(pdb_dir):
-            if not fn.lower().endswith('.pdb'):
-                continue
-            stem = fn[:-4]
-            path = os.path.join(pdb_dir, fn)
-            if stem not in mp:
-                mp[stem] = path
-            base = _strip_uid_suffix(stem)
-            if base not in mp:
-                mp[base] = path
-        print(f"[PDB] 目录 {pdb_dir} 中共发现 {len(mp)} 个 uid->pdb 映射")
-    else:
-                    
-        if not pdb_dir.lower().endswith('.pdb'):
-            raise FileNotFoundError(f"PDB_DIR 既不是目录也不是 .pdb 文件: {pdb_dir}")
-        fn = os.path.basename(pdb_dir)
-        stem = fn[:-4]
-        path = pdb_dir
-        if stem not in mp:
-            mp[stem] = path
-        base = _strip_uid_suffix(stem)
-        if base not in mp:
-            mp[base] = path
-        print(f"[PDB] 单一 pdb 文件: {pdb_dir} -> 映射数={len(mp)}")
-
-    _PDB_UID_MAP_CACHE[pdb_dir] = mp
-    return mp
-
-                       
 def kmer_tokens(seq: str, k: int) -> List[str]:
     seq = ensure_len_31(clean_seq(seq))
     return [seq[i:i+k] for i in range(0, len(seq)-k+1)]
@@ -1185,27 +1379,56 @@ class KmerVocab:
         self.counts: Dict[str,int] = {}
         self.stoi: Dict[str,int] = {'<OOV>':0}
         self.itos: List[str] = ['<OOV>']
+        self.allowed_tokens = None
+        self.min_count = 1
+
     def add_seq(self, seq: str):
         for tok in kmer_tokens(seq, self.k):
             self.counts[tok] = self.counts.get(tok, 0) + 1
-    def finalize(self):
-        items = sorted(self.counts.items(), key=lambda x:(-x[1], x[0]))
+
+    def finalize(self, min_count: int = 1):
+        self.min_count = int(max(1, min_count))
+        items = [(t, c) for t, c in self.counts.items() if c >= self.min_count]
+        items = sorted(items, key=lambda x:(-x[1], x[0]))
         if self.max_size is not None:
             items = items[:self.max_size]
         for tok,_ in items:
             self.stoi[tok] = len(self.itos)
             self.itos.append(tok)
+
     def encode(self, seq: str) -> List[int]:
         toks = kmer_tokens(seq, self.k)
-        return [self.stoi.get(t, 0) for t in toks]
+        if self.allowed_tokens is None:
+            return [self.stoi.get(t, 0) for t in toks]
+        return [self.stoi.get(t, 0) if t in self.allowed_tokens else 0 for t in toks]
+
     @property
     def size(self):
         return len(self.itos)
 
+def build_active_kmer_views(kmer_vocabs: Dict[int, KmerVocab],
+                            samples: List['Sample'],
+                            min_count: int = 1) -> Dict[int, KmerVocab]:
+    out: Dict[int, KmerVocab] = {}
+    min_count = int(max(1, min_count))
+    for k, base in kmer_vocabs.items():
+        cnt: Dict[str, int] = {}
+        for smp in samples:
+            for tok in kmer_tokens(smp.seq, k):
+                cnt[tok] = cnt.get(tok, 0) + 1
+        allowed = {tok for tok, c in cnt.items()
+                   if c >= min_count and tok in base.stoi}
+        view = copy.copy(base)
+        view.allowed_tokens = allowed
+        out[k] = view
+        print(
+            f"[kmer fold-view] k={k}: active={len(allowed)}/{max(1, base.size-1)} "
+            f"(min_count={min_count})"
+        )
+    return out
 
-                               
-             
-                               
+
+
 class VConv1d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int,
                  stride: int = 1, padding: int = 0, dilation: int = 1, groups: int = 1,
@@ -1241,9 +1464,7 @@ class VConv1d(nn.Module):
                          dilation=self.conv.dilation, groups=self.conv.groups)
 
 
-                               
-                  
-                               
+
 class ConvBlock(nn.Module):
     def __init__(self, C_in, C_out, K, dropout=0.3):
         super().__init__()
@@ -1256,125 +1477,507 @@ class ConvBlock(nn.Module):
         )
     def forward(self, x): return self.seq(x)
 
-class BranchESM(nn.Module):
-    def __init__(self, D_in, hidden=256, ksize=7, n_layers=2, dropout=0.3):
+class SafeQueryPool(nn.Module):
+    def __init__(self, d_model: int, dropout: float = 0.0):
         super().__init__()
-        layers = []; C = D_in
-        for _ in range(n_layers):
-            layers.append(ConvBlock(C, CONFIG['VCONV_KERNELS'], ksize, dropout)); C = CONFIG['VCONV_KERNELS']
-        self.backbone = nn.Sequential(*layers)
-        self.head = nn.Sequential(nn.AdaptiveMaxPool1d(1), nn.Flatten(),
-                                  nn.Linear(C, hidden), nn.GELU(), nn.Dropout(dropout),
-                                  nn.Linear(hidden, 1))
+        self.q_proj = nn.Linear(d_model, d_model, bias=False)
+        self.k_proj = nn.Linear(d_model, d_model, bias=False)
+        self.v_proj = nn.Linear(d_model, d_model, bias=False)
+        self.out = nn.Linear(d_model, d_model, bias=False)
+        self.dropout = nn.Dropout(dropout)
+        self.scale = float(d_model) ** -0.5
+
+    def forward(self, h: torch.Tensor, query: torch.Tensor,
+                valid: torch.Tensor, region: Optional[torch.Tensor] = None) -> torch.Tensor:
+        mask = valid.bool()
+        if region is not None:
+            mask = mask & region.bool()
+        empty = mask.sum(dim=1) == 0
+        if empty.any():
+            mask = mask.clone()
+            mask[empty] = valid.bool()[empty]
+
+        q = self.q_proj(query).unsqueeze(1)
+        k = self.k_proj(h)
+        v = self.v_proj(h)
+        score = (q * k).sum(dim=-1) * self.scale
+        score = score.masked_fill(~mask, -1e4)
+        a = F.softmax(score, dim=-1)
+        a = a * mask.float()
+        a = a / a.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+        a = self.dropout(a)
+        return self.out((v * a.unsqueeze(-1)).sum(dim=1))
+
+class BranchESMCenterQueryTransformer(nn.Module):
+    def __init__(self, D_in: int, hidden: int = 256, dropout: float = 0.15):
+        super().__init__()
+        d = int(CONFIG.get('ESM_CQT_DIM', 256))
+        heads = int(CONFIG.get('ESM_CQT_HEADS', 8))
+        layers = int(CONFIG.get('ESM_CQT_LAYERS', 2))
+        ffn = int(CONFIG.get('ESM_CQT_FFN', 512))
+        drop = float(CONFIG.get('ESM_CQT_DROPOUT', dropout))
+        self.local_radius = int(CONFIG.get('ESM_CQT_LOCAL_RADIUS', 7))
+        self.side_radius = int(CONFIG.get('ESM_CQT_SIDE_RADIUS', 10))
+
+        self.input_norm = nn.LayerNorm(D_in)
+        self.input_proj = nn.Sequential(
+            nn.Linear(D_in, d),
+            nn.LayerNorm(d),
+            nn.GELU(),
+            nn.Dropout(drop),
+        )
+        self.pos_emb = nn.Embedding(MAX_LEN, d)
+
+        enc_layer = nn.TransformerEncoderLayer(
+            d_model=d, nhead=heads, dim_feedforward=ffn,
+            dropout=drop, activation='gelu', batch_first=True,
+            norm_first=True,
+        )
+        self.encoder = nn.TransformerEncoder(enc_layer, num_layers=layers, norm=nn.LayerNorm(d))
+
+        self.q_global = nn.Parameter(torch.zeros(d))
+        self.q_local = nn.Parameter(torch.zeros(d))
+        self.q_left = nn.Parameter(torch.zeros(d))
+        self.q_right = nn.Parameter(torch.zeros(d))
+        for p in (self.q_global, self.q_local, self.q_left, self.q_right):
+            nn.init.normal_(p, mean=0.0, std=0.02)
+
+        self.pool_global = SafeQueryPool(d, dropout=drop * 0.5)
+        self.pool_local = SafeQueryPool(d, dropout=drop * 0.5)
+        self.pool_left = SafeQueryPool(d, dropout=drop * 0.5)
+        self.pool_right = SafeQueryPool(d, dropout=drop * 0.5)
+
+        self.head = nn.Sequential(
+            nn.Linear(d * 6, hidden),
+            nn.LayerNorm(hidden),
+            nn.GELU(),
+            nn.Dropout(drop),
+            nn.Linear(hidden, 128),
+            nn.GELU(),
+            nn.Dropout(drop * 0.5),
+            nn.Linear(128, 1),
+        )
+
+    @staticmethod
+    def _region_mask(valid: torch.Tensor, center: int, radius: int, kind: str) -> torch.Tensor:
+        B, L = valid.shape
+        r = torch.zeros_like(valid)
+        if kind == 'local':
+            r[:, max(0, center-radius):min(L, center+radius+1)] = 1.0
+        elif kind == 'left':
+            r[:, max(0, center-radius):center] = 1.0
+        elif kind == 'right':
+            r[:, center+1:min(L, center+radius+1)] = 1.0
+        else:
+            r[:] = 1.0
+        return r * valid
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        valid = (x.abs().sum(dim=1) > 0).float()
+        xt = x.transpose(1, 2)
+        B, L, _ = xt.shape
+        c = min(15, L - 1)
+
+        h = self.input_proj(self.input_norm(xt))
+        pos = torch.arange(L, device=x.device).unsqueeze(0).expand(B, -1)
+        h = (h + self.pos_emb(pos)) * valid.unsqueeze(-1)
+        h = self.encoder(h, src_key_padding_mask=~valid.bool())
+        h = h * valid.unsqueeze(-1)
+
+        center = h[:, c]
+        global_mean = (h * valid.unsqueeze(-1)).sum(dim=1) / valid.sum(dim=1, keepdim=True).clamp_min(1.0)
+
+        local_mask = self._region_mask(valid, c, self.local_radius, 'local')
+        left_mask = self._region_mask(valid, c, self.side_radius, 'left')
+        right_mask = self._region_mask(valid, c, self.side_radius, 'right')
+
+        g_global = self.pool_global(h, center + self.q_global, valid)
+        g_local = self.pool_local(h, center + self.q_local, valid, local_mask)
+        g_left = self.pool_left(h, center + self.q_left, valid, left_mask)
+        g_right = self.pool_right(h, center + self.q_right, valid, right_mask)
+        feat = torch.cat([center, global_mean, g_global, g_local, g_left, g_right], dim=1)
+        return self.head(feat)
+
+class BranchESMSiteContrast(nn.Module):
+    def __init__(self, D_in: int, hidden: int = 256, dropout: float = 0.18):
+        super().__init__()
+        d = int(CONFIG.get('ESM_SC_DIM', 192))
+        rel_dim = int(CONFIG.get('ESM_SC_REL_DIM', d))
+        radii = [int(r) for r in CONFIG.get('ESM_SC_RADII', [1, 2, 3, 5, 7, 10, 15])]
+        if not radii:
+            raise ValueError('ESM_SC_RADII cannot be empty')
+        if any(r <= 0 for r in radii):
+            raise ValueError(f'ESM_SC_RADII must be positive, got {radii}')
+
+        self.d = d
+        self.rel_dim = rel_dim
+        self.radii = tuple(radii)
+        self.drop = float(CONFIG.get('ESM_SC_DROPOUT', dropout))
+        self.use_position_emb = bool(CONFIG.get('ESM_SC_USE_POSITION_EMB', True))
+
+        self.input_norm = nn.LayerNorm(D_in)
+        self.input_proj = nn.Sequential(
+            nn.Linear(D_in, d),
+            nn.LayerNorm(d),
+            nn.GELU(),
+            nn.Dropout(self.drop),
+        )
+        self.pos_emb = nn.Embedding(MAX_LEN, d) if self.use_position_emb else None
+
+        self.radius_relation = nn.Sequential(
+            nn.Linear(d * 6, rel_dim),
+            nn.LayerNorm(rel_dim),
+            nn.GELU(),
+            nn.Dropout(self.drop),
+            nn.Linear(rel_dim, rel_dim),
+            nn.GELU(),
+        )
+        self.radius_emb = nn.Embedding(len(self.radii), rel_dim)
+        self.radius_gate = nn.Sequential(
+            nn.LayerNorm(rel_dim),
+            nn.Linear(rel_dim, max(32, rel_dim // 2)),
+            nn.GELU(),
+            nn.Linear(max(32, rel_dim // 2), 1),
+        )
+
+        self.site_relation = nn.Sequential(
+            nn.Linear(d * 3, rel_dim),
+            nn.LayerNorm(rel_dim),
+            nn.GELU(),
+            nn.Dropout(self.drop * 0.75),
+            nn.Linear(rel_dim, rel_dim),
+            nn.GELU(),
+        )
+        self.distance_bias = nn.Embedding(MAX_LEN, 1)
+        nn.init.zeros_(self.distance_bias.weight)
+        self.site_score = nn.Linear(rel_dim, 1)
+        self.site_value = nn.Linear(rel_dim, rel_dim)
+
+        self.center_proj = nn.Sequential(nn.Linear(d, rel_dim), nn.GELU())
+        self.global_proj = nn.Sequential(nn.Linear(d, rel_dim), nn.GELU())
+        self.side_proj = nn.Sequential(nn.Linear(d, rel_dim), nn.GELU())
+
+        fusion_dim = rel_dim * 6
+        self.head = nn.Sequential(
+            nn.Linear(fusion_dim, hidden),
+            nn.LayerNorm(hidden),
+            nn.GELU(),
+            nn.Dropout(self.drop),
+            nn.Linear(hidden, 128),
+            nn.GELU(),
+            nn.Dropout(self.drop * 0.5),
+            nn.Linear(128, 1),
+        )
+
+    @staticmethod
+    def _masked_mean(h: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        m = mask.float().unsqueeze(-1)
+        den = m.sum(dim=1).clamp_min(1.0)
+        return (h * m).sum(dim=1) / den
+
+    @staticmethod
+    def _has_any(mask: torch.Tensor) -> torch.Tensor:
+        return mask.float().sum(dim=1) > 0
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        valid = (x.abs().sum(dim=1) > 0)
+        xt = x.transpose(1, 2)
+        B, L, _ = xt.shape
+        c = min(15, L - 1)
+
+        h = self.input_proj(self.input_norm(xt))
+        if self.pos_emb is not None:
+            pos = torch.arange(L, device=x.device)
+            h = h + self.pos_emb(pos).unsqueeze(0)
+        h = h * valid.unsqueeze(-1).float()
+
+        center = h[:, c, :]
+        other_valid = valid.clone()
+        other_valid[:, c] = False
+
+        global_context = self._masked_mean(h, other_valid)
+
+        pos_idx = torch.arange(L, device=x.device).unsqueeze(0)
+        left_all_mask = other_valid & (pos_idx < c)
+        right_all_mask = other_valid & (pos_idx > c)
+        left_all = self._masked_mean(h, left_all_mask)
+        right_all = self._masked_mean(h, right_all_mask)
+        global_side_delta = left_all - right_all
+
+
+        radius_tokens = []
+        radius_valid = []
+        dist = (pos_idx - c).abs()
+        for r in self.radii:
+            local_mask = other_valid & (dist <= r)
+            left_mask = local_mask & (pos_idx < c)
+            right_mask = local_mask & (pos_idx > c)
+
+            local = self._masked_mean(h, local_mask)
+            left = self._masked_mean(h, left_mask)
+            right = self._masked_mean(h, right_mask)
+
+            delta = center - local
+            rel = torch.cat([
+                center,
+                local,
+                delta,
+                delta.abs(),
+                center * local,
+                left - right,
+            ], dim=-1)
+            radius_tokens.append(self.radius_relation(rel))
+            radius_valid.append(self._has_any(local_mask))
+
+        rt = torch.stack(radius_tokens, dim=1)
+        rv = torch.stack(radius_valid, dim=1)
+        radius_ids = torch.arange(len(self.radii), device=x.device)
+        rt = rt + self.radius_emb(radius_ids).unsqueeze(0)
+
+        empty = ~rv.any(dim=1)
+        if empty.any():
+            rv = rv.clone()
+            rv[empty, 0] = True
+
+        gate_logits = self.radius_gate(rt).squeeze(-1)
+        gate_logits = gate_logits.masked_fill(~rv, -1e4)
+        gate = F.softmax(gate_logits, dim=1)
+        radius_fused = (rt * gate.unsqueeze(-1)).sum(dim=1)
+
+        rt_for_max = rt.masked_fill(~rv.unsqueeze(-1), -1e4)
+        radius_max = rt_for_max.max(dim=1).values
+
+
+        center_expand = center.unsqueeze(1).expand(-1, L, -1)
+        site_delta = h - center_expand
+        site_rel = torch.cat([
+            site_delta,
+            site_delta.abs(),
+            h * center_expand,
+        ], dim=-1)
+        site_h = self.site_relation(site_rel)
+
+        dist_idx = dist.squeeze(0).clamp(max=MAX_LEN - 1).long()
+        site_logits = self.site_score(site_h).squeeze(-1)
+        site_logits = site_logits + self.distance_bias(dist_idx).view(1, L)
+        site_logits = site_logits.masked_fill(~other_valid, -1e4)
+
+        has_other = other_valid.any(dim=1)
+        site_attn = F.softmax(site_logits, dim=1)
+        site_attn = site_attn * other_valid.float()
+        site_attn = site_attn / site_attn.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        site_pool = (self.site_value(site_h) * site_attn.unsqueeze(-1)).sum(dim=1)
+        site_pool = site_pool * has_other.float().unsqueeze(-1)
+
+        feat = torch.cat([
+            self.center_proj(center),
+            self.global_proj(global_context),
+            radius_fused,
+            radius_max,
+            site_pool,
+            self.side_proj(global_side_delta),
+        ], dim=-1)
+        return self.head(feat)
+
+class BranchESMSiteContrastV2(nn.Module):
+    def __init__(self, D_in: int, hidden: int = 256, dropout: float = 0.16):
+        super().__init__()
+        d = int(CONFIG.get('ESM_SC2_DIM', 192))
+        rel_dim = int(CONFIG.get('ESM_SC2_REL_DIM', 192))
+        self.radii = tuple(int(r) for r in CONFIG.get('ESM_SC2_RADII', [1,2,3,5,7,10,15]))
+        self.drop = float(CONFIG.get('ESM_SC2_DROPOUT', dropout))
+        self.input_norm = nn.LayerNorm(D_in)
+        self.input_proj = nn.Sequential(nn.Linear(D_in,d), nn.LayerNorm(d), nn.GELU(), nn.Dropout(self.drop))
+        self.pos_emb = nn.Embedding(MAX_LEN, d)
+
+        self.radius_relation = nn.Sequential(
+            nn.Linear(d*9, rel_dim), nn.LayerNorm(rel_dim), nn.GELU(), nn.Dropout(self.drop),
+            nn.Linear(rel_dim, rel_dim), nn.GELU()
+        )
+        self.radius_emb = nn.Embedding(len(self.radii), rel_dim)
+        self.radius_gate = nn.Sequential(nn.LayerNorm(rel_dim), nn.Linear(rel_dim, max(32,rel_dim//2)), nn.GELU(), nn.Linear(max(32,rel_dim//2),1))
+
+        self.site_relation = nn.Sequential(
+            nn.Linear(d*4, rel_dim), nn.LayerNorm(rel_dim), nn.GELU(), nn.Dropout(self.drop*0.75),
+            nn.Linear(rel_dim, rel_dim), nn.GELU()
+        )
+        self.signed_distance_bias = nn.Embedding(2*MAX_LEN-1, 1)
+        nn.init.zeros_(self.signed_distance_bias.weight)
+        self.side_emb = nn.Embedding(3, rel_dim)
+        self.site_score = nn.Linear(rel_dim,1)
+        self.site_value = nn.Linear(rel_dim,rel_dim)
+
+        self.proj = nn.ModuleDict({k: nn.Sequential(nn.Linear(d,rel_dim), nn.GELU()) for k in ['center','global','left','right','side']})
+        self.head = nn.Sequential(
+            nn.Linear(rel_dim*8, hidden), nn.LayerNorm(hidden), nn.GELU(), nn.Dropout(self.drop),
+            nn.Linear(hidden,128), nn.GELU(), nn.Dropout(self.drop*0.5), nn.Linear(128,1)
+        )
+
+    @staticmethod
+    def _mean(h, mask):
+        m=mask.float().unsqueeze(-1); den=m.sum(1).clamp_min(1.0); return (h*m).sum(1)/den
+
     def forward(self, x):
-        h = self.backbone(x); return self.head(h)
+        valid=(x.abs().sum(dim=1)>0)
+        xt=x.transpose(1,2); B,L,_=xt.shape; c=min(15,L-1)
+        h=self.input_proj(self.input_norm(xt))
+        pos=torch.arange(L,device=x.device)
+        h=h+self.pos_emb(pos).unsqueeze(0)
+        h=h*valid.unsqueeze(-1).float()
+        center=h[:,c]
+        other=valid.clone(); other[:,c]=False
+        idx=pos.unsqueeze(0)
+        left_all_m=other & (idx<c); right_all_m=other & (idx>c)
+        left_all=self._mean(h,left_all_m); right_all=self._mean(h,right_all_m)
+        glob=self._mean(h,other); side=left_all-right_all
+        dist=(idx-c).abs()
+        rts=[]; rvalid=[]
+        for r in self.radii:
+            lm=other & (dist<=r); lmask=lm&(idx<c); rmask=lm&(idx>c)
+            local=self._mean(h,lm); left=self._mean(h,lmask); right=self._mean(h,rmask)
+            rel=torch.cat([center,local,left,right,center-local,center-left,center-right,left-right,(left-right).abs()],dim=-1)
+            rts.append(self.radius_relation(rel)); rvalid.append(lm.any(dim=1))
+        rt=torch.stack(rts,1); rv=torch.stack(rvalid,1)
+        rid=torch.arange(len(self.radii),device=x.device); rt=rt+self.radius_emb(rid).unsqueeze(0)
+        empty=~rv.any(1)
+        if empty.any(): rv=rv.clone(); rv[empty,0]=True
+        gl=self.radius_gate(rt).squeeze(-1).masked_fill(~rv,-1e4)
+        gw=F.softmax(gl,dim=1); radius_fused=(rt*gw.unsqueeze(-1)).sum(1)
+        radius_max=rt.masked_fill(~rv.unsqueeze(-1),-1e4).max(1).values
+
+        ce=center.unsqueeze(1).expand(-1,L,-1); delta=h-ce
+        signed=((idx-c)+(MAX_LEN-1)).clamp(0,2*MAX_LEN-2).long().squeeze(0)
+        side_id=torch.zeros(L,device=x.device,dtype=torch.long); side_id[pos<c]=1; side_id[pos>c]=2
+        sh=self.site_relation(torch.cat([delta,delta.abs(),h*ce,h],dim=-1)) + self.side_emb(side_id).unsqueeze(0)
+        slog=self.site_score(sh).squeeze(-1)+self.signed_distance_bias(signed).view(1,L)
+        slog=slog.masked_fill(~other,-1e4)
+        att=F.softmax(slog,dim=1)*other.float(); att=att/att.sum(1,keepdim=True).clamp_min(1e-8)
+        sp=(self.site_value(sh)*att.unsqueeze(-1)).sum(1)*other.any(1).float().unsqueeze(-1)
+        feat=torch.cat([
+            self.proj['center'](center), self.proj['global'](glob), radius_fused, radius_max, sp,
+            self.proj['side'](side), self.proj['left'](left_all), self.proj['right'](right_all)
+        ],dim=-1)
+        return self.head(feat)
+
+AA_SEQ_ORDER = list('ACDEFGHIKLMNPQRSTVWY')
+AA_SEQ_STOI = {'<PAD>': 0, **{aa: i + 1 for i, aa in enumerate(AA_SEQ_ORDER)}, 'X': 21}
+AA_SEQ_VOCAB_SIZE = max(AA_SEQ_STOI.values()) + 1
 
 class KmerHead(nn.Module):
-    def __init__(self, vocab_size, embed_dim=32, ksize=5, n_layers=1, dropout=0.2):
+    def __init__(self, vocab_size, k: int, embed_dim=64,
+                 conv_channels=64, kernels=(3,5,7), head_dim=192,
+                 local_radius=4, dropout=0.25):
         super().__init__()
+        self.k = int(k)
+        self.local_radius = int(local_radius)
+        self.max_tokens = MAX_LEN - self.k + 1
+
         self.emb = nn.Embedding(vocab_size, embed_dim, padding_idx=0)
-        layers = []; C = embed_dim
-        for _ in range(n_layers):
-            layers.append(ConvBlock(C, 64, ksize, dropout)); C = 64
-        self.backbone = nn.Sequential(*layers)
-        self.proj = nn.Sequential(nn.AdaptiveMaxPool1d(1), nn.Flatten(),
-                                  nn.Linear(C, 128), nn.GELU(), nn.Dropout(dropout))
+        self.pos_emb = nn.Embedding(self.max_tokens, embed_dim)
+        self.in_norm = nn.LayerNorm(embed_dim)
+
+        kernels = [int(x) for x in kernels]
+        self.multi = nn.ModuleList([
+            ConvBlock(embed_dim, conv_channels, K, dropout)
+            for K in kernels
+        ])
+        fused_c = conv_channels * len(kernels)
+        self.fuse = nn.Sequential(
+            nn.Conv1d(fused_c, conv_channels * 2, kernel_size=1),
+            nn.BatchNorm1d(conv_channels * 2),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+        self.out_channels = conv_channels * 2
+        self.attn_score = nn.Conv1d(self.out_channels, 1, kernel_size=1)
+
+        self.proj = nn.Sequential(
+            nn.Linear(self.out_channels * 5, head_dim),
+            nn.LayerNorm(head_dim),
+            nn.GELU(),
+            nn.Dropout(dropout),
+        )
+
     def forward(self, x_ids):
-        e = self.emb(x_ids).transpose(1,2); h = self.backbone(e); return self.proj(h)
+        B, L = x_ids.shape
+        pos = torch.arange(L, device=x_ids.device).unsqueeze(0).expand(B, -1)
+        e = self.emb(x_ids) + self.pos_emb(pos)
+        e = self.in_norm(e).transpose(1, 2)
+
+        hs = [blk(e) for blk in self.multi]
+        h = self.fuse(torch.cat(hs, dim=1))
+
+        g_max = h.max(dim=-1).values
+        g_mean = h.mean(dim=-1)
+
+        a = F.softmax(self.attn_score(h).squeeze(1), dim=-1)
+        g_attn = (h * a.unsqueeze(1)).sum(dim=-1)
+
+        c_lo = max(0, 15 - self.k + 1)
+        c_hi = min(L, 16)
+        if c_hi <= c_lo:
+            g_center = h[:, :, L // 2]
+        else:
+            g_center = h[:, :, c_lo:c_hi].mean(dim=-1)
+
+        aa_lo = 15 - self.local_radius
+        aa_hi = 15 + self.local_radius
+        l_lo = max(0, aa_lo - self.k + 1)
+        l_hi = min(L, aa_hi + 1)
+        if l_hi <= l_lo:
+            g_local = h[:, :, L // 2]
+        else:
+            g_local = h[:, :, l_lo:l_hi].max(dim=-1).values
+
+        g = torch.cat([g_max, g_mean, g_attn, g_center, g_local], dim=1)
+        return self.proj(g)
 
 class BranchKmer(nn.Module):
-    def __init__(self, vocab_sizes: Dict[int,int], embed_dim=32, ksize=5, dropout=0.3):
+    def __init__(self, vocab_sizes: Dict[int,int], embed_dim=64, ksize=5, dropout=0.25):
         super().__init__()
         self.ks = sorted(vocab_sizes.keys())
         self.heads = nn.ModuleDict({
-            str(k): KmerHead(vocab_sizes[k], embed_dim, ksize=max(3, k), n_layers=1, dropout=dropout)
+            str(k): KmerHead(
+                vocab_size=vocab_sizes[k],
+                k=k,
+                embed_dim=embed_dim,
+                conv_channels=int(CONFIG.get('KMER_CONV_CHANNELS', 64)),
+                kernels=tuple(CONFIG.get('KMER_MULTI_KERNELS', [3,5,7])),
+                head_dim=int(CONFIG.get('KMER_HEAD_DIM', 192)),
+                local_radius=int(CONFIG.get('KMER_LOCAL_RADIUS', 4)),
+                dropout=dropout,
+            )
             for k in self.ks
         })
-        in_dim = 128 * len(self.ks)
-        self.out = nn.Sequential(nn.Linear(in_dim, 256), nn.GELU(), nn.Dropout(dropout),
-                                 nn.Linear(256, 1))
+        in_dim = int(CONFIG.get('KMER_HEAD_DIM', 192)) * len(self.ks)
+        self.out = nn.Sequential(
+            nn.Linear(in_dim, 384),
+            nn.LayerNorm(384),
+            nn.GELU(),
+            nn.Dropout(dropout),
+            nn.Linear(384, 128),
+            nn.GELU(),
+            nn.Dropout(dropout * 0.6),
+            nn.Linear(128, 1),
+        )
+
     def forward(self, x_dict):
         feats = [self.heads[str(k)](x_dict[k]) for k in self.ks]
-        h = torch.cat(feats, dim=1); return self.out(h)
+        h = torch.cat(feats, dim=1)
+        return self.out(h)
 
 
-class FourWayBlend(nn.Module):
-       
-                 
-                                                                                
-                                      
-       
-    def __init__(self,
-                 branch_models: Dict[str, nn.Module],
-                 weights: np.ndarray):
-        super().__init__()
-        self.branch_names = list(branch_models.keys())
-        self.branches = nn.ModuleDict(branch_models)
 
-        w_np = np.asarray(weights, dtype=np.float32).reshape(-1)
-        assert w_np.shape[0] == len(self.branch_names), \
-            f"FourWayBlend: 权重个数 {w_np.shape[0]} 和分支数 {len(self.branch_names)} 不一致"
-
-        w = torch.from_numpy(w_np).view(1, -1, 1)           
-        self.register_buffer('w', w)
-
-    @torch.no_grad()
-    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        probs = []
-        for name in self.branch_names:
-            m = self.branches[name]
-            if name in ('kmer', 'esmfold', 'physchem'):
-                p = torch.sigmoid(m(batch[name]))
-            else:
-                p = torch.sigmoid(m(batch[name]))
-
-            probs.append(p)
-        P = torch.stack(probs, dim=1)               
-        out = (P * self.w).sum(dim=1)             
-        return out
-
-
-class FiveWayStack(nn.Module):
-       
-                       
-                                  
-       
-    def __init__(self,
-                 branch_models: Dict[str, nn.Module],
-                 meta_state_dict: Optional[Dict[str, torch.Tensor]] = None):
-        super().__init__()
-        self.branch_names = list(branch_models.keys())
-        self.branches = nn.ModuleDict(branch_models)
-
-        self.meta = nn.Linear(len(self.branch_names), 1)
-        if meta_state_dict is not None:
-            self.meta.load_state_dict(meta_state_dict)
-
-    @torch.no_grad()
-    def forward(self, batch: Dict[str, torch.Tensor]) -> torch.Tensor:
-        probs = []
-        for name in self.branch_names:
-            m = self.branches[name]
-            if name == 'kmer':
-                p = torch.sigmoid(m(batch['kmer']))
-            else:
-                p = torch.sigmoid(m(batch[name]))
-            probs.append(p)
-
-        feats = torch.cat(probs, dim=1)           
-        logit = self.meta(feats)                  
-        return torch.sigmoid(logit)
-
-
-                               
-             
-                               
 @dataclass
 class Sample:
     uid: str
     seq: str
     label: int
     physchem: Optional[np.ndarray] = None
+    feature_uid: Optional[str] = None
+
+    def feat_uid(self) -> str:
+        return str(self.feature_uid if self.feature_uid is not None else self.uid)
 
 class PalmDataset(Dataset):
     def __init__(self, samples,
@@ -1382,110 +1985,140 @@ class PalmDataset(Dataset):
                  esm_h5: Optional[str] = None,
                  kmer_vocabs: Optional[Dict[int, KmerVocab]] = None,
                  norm_stats: Optional[Dict[str, np.ndarray]] = None,
-                 uid2idx: Optional[dict] = None,
-                 pdb_dir: Optional[str] = None) -> None:
+                 uid2idx: Optional[dict] = None) -> None:
         self.samples = samples
         self.branch = branch
         self.esm_h5_path = esm_h5
         self.kvoc = kmer_vocabs
         self.stats = norm_stats or {}
         self.uid2idx = uid2idx
-
-                   
-        self.h5 = None
-        if self.branch == 'esm' and self.esm_h5_path is not None:
-            import h5py
-            self.h5 = h5py.File(self.esm_h5_path, "r")
-
-                    
-        self.pdb_dir = pdb_dir
-        self.uid2pdb: Optional[Dict[str, str]] = None
-        self._dist_cache: Dict[str, np.ndarray] = {}
-        if self.branch in ('physchem', 'esmfold'):
-            if not self.pdb_dir:
-                raise RuntimeError(f"{self.branch} 分支需要提供 pdb_dir")
-            self.uid2pdb = build_pdb_uid_map(self.pdb_dir)
+        self.h5 = {}
 
     def __len__(self):
         return len(self.samples)
+
+    def _get_h5(self, source: str = 'main'):
+        if 'main' not in self.h5:
+            if not self.esm_h5_path:
+                raise RuntimeError('未提供 main ESM H5')
+            self.h5['main'] = h5py.File(self.esm_h5_path, 'r')
+        return self.h5['main']
+
+    def __getstate__(self):
+        state=self.__dict__.copy()
+        state["h5"]={}
+        return state
 
     def __getitem__(self, idx):
         s = self.samples[idx]
         y = np.float32(s.label)
 
         if self.branch == 'physchem':
-                             
-            if self.uid2pdb is None:
-                if self.pdb_dir is None:
-                    raise RuntimeError("physchem 分支需要传入 pdb_dir")
-                self.uid2pdb = build_pdb_uid_map(self.pdb_dir)
-
-            path = self.uid2pdb.get(s.uid)
-            if path is None:
-                path = self.uid2pdb.get(_strip_uid_suffix(s.uid))
-            if path is None:
-                raise RuntimeError(f"[physchem] 找不到 {s.uid} 对应的 PDB 文件")
-
-            residues = load_residues_from_pdb(path)
-            seq_feat, L = get_seq_feat(residues, MAX_LEN)                     
-
+            seq_feat, residue_mask = get_seq_feat_from_sequence(s.seq, MAX_LEN)
             x = {
-                'seq':    torch.from_numpy(seq_feat),                              
-                'length': torch.tensor(L, dtype=torch.long),
+                'seq': torch.from_numpy(seq_feat),
+                'mask': torch.from_numpy(residue_mask),
             }
             return {'x': x, 'y': torch.tensor(y)}
 
-        if self.branch == 'esmfold':
-                             
-            if self.uid2pdb is None:
-                if self.pdb_dir is None:
-                    raise RuntimeError("esmfold 分支需要传入 pdb_dir")
-                self.uid2pdb = build_pdb_uid_map(self.pdb_dir)
-
-            path = self.uid2pdb.get(s.uid)
-            if path is None:
-                path = self.uid2pdb.get(_strip_uid_suffix(s.uid))
-            if path is None:
-                raise RuntimeError(f"[esmfold] 找不到 {s.uid} 对应的 PDB 文件")
-
-            residues = load_residues_from_pdb(path)
-            pair_feat, L = build_pair_feature_from_residues(residues, MAX_LEN)             
-
+        if self.branch == 'physchem_pca':
+            seq_feat, residue_mask = get_pca_feat_from_sequence(s.seq, MAX_LEN)
             x = {
-                'pair':   torch.from_numpy(pair_feat),                    
-                'length': torch.tensor(L, dtype=torch.long),
+                'seq': torch.from_numpy(seq_feat),
+                'mask': torch.from_numpy(residue_mask),
             }
             return {'x': x, 'y': torch.tensor(y)}
-
 
         if self.branch == 'esm':
-            if self.h5 is None:
-                raise RuntimeError("ESM 分支未打开 h5")
-            if self.uid2idx is None or s.uid not in self.uid2idx:
-                raise RuntimeError(f"uid={s.uid} 不在 uid2idx 中")
-            j = self.uid2idx[s.uid]
-            x = self.h5['window_emb'][j].astype(np.float32).T
+            fuid = s.feat_uid() if hasattr(s, 'feat_uid') else str(s.uid)
+            if self.uid2idx is None or fuid not in self.uid2idx:
+                raise RuntimeError(f"uid={fuid} 不在 main ESM H5 中")
+            j = self.uid2idx[fuid]
+
+            store = get_esm_ram_store(self.esm_h5_path)
+            if store is not None:
+                x_raw = store['window_emb'][j]
+                mask = (
+                    store['valid_mask'][j]
+                    if store.get('valid_mask') is not None
+                    else np.ones((x_raw.shape[0],), dtype=np.uint8)
+                )
+            else:
+                f = self._get_h5('main')
+                x_raw = f['window_emb'][j]
+                mask = (
+                    f['valid_mask'][j].astype(np.uint8)
+                    if 'valid_mask' in f
+                    else np.ones((x_raw.shape[0],), dtype=np.uint8)
+                )
+
+            x = np.asarray(x_raw, dtype=np.float32).T
+
             if 'esm_mean' in self.stats:
-                x = (x - self.stats['esm_mean'][:, None]) / (self.stats['esm_std'][:, None] + 1e-8)
+                x = (x - self.stats['esm_mean'][:, None]) / (
+                    self.stats['esm_std'][:, None] + 1e-8
+                )
+
+            if mask is not None:
+                x[:, np.asarray(mask) == 0] = 0.0
+
             return {'x': torch.from_numpy(x), 'y': torch.tensor(y)}
 
+        if self.branch == 'structure':
+            store = _STRUCTURE_STORES.get('main')
+            if store is None:
+                raise RuntimeError(
+                    "主 StructureFeatureStore 尚未初始化；"
+                    "请先调用 prepare_structure_store(..., source='main')"
+                )
+            fuid = s.feat_uid() if hasattr(s, 'feat_uid') else str(s.uid)
+            feat = store.get(fuid)
+            chem = feat.chem.astype(np.float32, copy=True)
+            if 'struct_chem_mean' in self.stats:
+                chem = (chem - self.stats['struct_chem_mean']) / (
+                    self.stats['struct_chem_std'] + 1e-8
+                )
+            x = {
+              'pair': torch.from_numpy(feat.pair13.astype(np.float32, copy=False)),
+              'length': torch.tensor(int(feat.length), dtype=torch.long),
+              'valid_mask': torch.from_numpy(feat.valid_mask.astype(np.float32, copy=False)),
+              'chem': torch.from_numpy(chem),
+              'quality': torch.tensor([
+                  float(feat.center_conf),
+                  float(feat.mean_conf),
+                  float(feat.sequence_match_fraction),
+              ], dtype=torch.float32),
+            }
+            return {'x': x, 'y': torch.tensor(y)}
+
         if self.branch == 'kmer':
+            if self.kvoc is None:
+                raise RuntimeError("kmer 分支未提供 kmer_vocabs")
             x_dict = {}
             for k, vocab in self.kvoc.items():
                 ids = vocab.encode(s.seq)
                 x_dict[k] = torch.tensor(ids, dtype=torch.long)
             return {'x': x_dict, 'y': torch.tensor(y)}
-        raise ValueError('Unknown branch')
 
-                             
+        raise ValueError(f'Unknown branch={self.branch}')
+
+
+
+
+_V12_AA20 = "ACDEFGHIKLMNPQRSTVWY"
+_V12_AAIDX = {a:i for i,a in enumerate(_V12_AA20)}
+
+
+
+
+
+
 def load_csv(csv_path: str) -> List[Sample]:
     df = pd.read_csv(csv_path)
-    
-                    
+
     cols = [c.strip() for c in df.columns]
     low = [c.lower() for c in cols]
-    
-                   
+
     def pick(target_names, default_idx):
         for t in target_names:
             if t in low:
@@ -1494,129 +2127,1535 @@ def load_csv(csv_path: str) -> List[Sample]:
             return cols[default_idx]
         return None
 
-                                                   
     idc = pick(['id', 'uniprotid', 'uid'], 0)
     seqc = pick(['window', 'seq', 'sequence'], 1)
     labc = pick(['lab', 'label', 'target'], 2)
-    
+
     if not all([idc, seqc, labc]):
         print(f"[Warn] 无法完美匹配列名，尝试使用默认索引 0,1,2。检测到的列: {cols}")
-                          
         idc, seqc, labc = cols[0], cols[1], cols[2]
 
     print(f"[Data] 使用列名: ID={idc}, Seq={seqc}, Label={labc}")
 
+
+
+    total_rows = len(df)
+
+    labels_raw = df[labc].astype(int)
+    raw_pos = int((labels_raw == 1).sum())
+    raw_neg = int((labels_raw == 0).sum())
+
     samples = []
-    for _, row in df.iterrows():
-        uid = str(row[idc])
-        seq = ensure_len_31(clean_seq(str(row[seqc])))
+    removed_bad_pos_rows = []
+
+    for row_idx, row in df.iterrows():
+        uid = str(row[idc]).strip()
+        raw_seq = str(row[seqc]).strip().upper()
         lab = int(row[labc])
-        
-                      
-                                          
-                                         
+
+        seq = ensure_len_31(clean_seq(raw_seq))
+
+        center_aa = seq[15] if len(seq) > 15 else ""
+
+        if lab == 1 and center_aa != "C":
+            removed_bad_pos_rows.append({
+                "row_index": row_idx,
+                "uid": uid,
+                "raw_seq": raw_seq,
+                "processed_seq31": seq,
+                "center_aa": center_aa,
+                "label": lab,
+            })
+            continue
+
         pc = np.zeros(7, dtype=np.float32)
-        
+
         samples.append(Sample(uid, seq, lab, pc))
+
+
+
+    kept_total = len(samples)
+    kept_pos = sum(1 for s in samples if int(s.label) == 1)
+    kept_neg = sum(1 for s in samples if int(s.label) == 0)
+    removed_bad_pos = len(removed_bad_pos_rows)
+
+    print("\n[Center-C QC] 阳性中心位点检查")
+    print(f"[Center-C QC] 原始总行数: {total_rows}")
+    print(f"[Center-C QC] 原始阳性 lab=1: {raw_pos}")
+    print(f"[Center-C QC] 原始阴性 lab=0: {raw_neg}")
+    print(f"[Center-C QC] 删除的阳性中心非 C 行数: {removed_bad_pos}")
+    print(f"[Center-C QC] 保留总数: {kept_total}")
+    print(f"[Center-C QC] 保留阳性 lab=1: {kept_pos}")
+    print(f"[Center-C QC] 保留阴性 lab=0: {kept_neg}")
+
+    if samples:
+        star_counts = np.array([s.seq.count('*') for s in samples], dtype=int)
+        n_with_star = int((star_counts > 0).sum())
+        print(f"[Star-padding QC] 含'*'窗口: {n_with_star}/{len(samples)} "
+              f"({n_with_star/max(1,len(samples)):.2%})")
+        print(f"[Star-padding QC] '*'总数: {int(star_counts.sum())}; "
+              f"单窗口最大'*'数: {int(star_counts.max())}")
+
+    if removed_bad_pos > 0:
+        try:
+            out_dir = CONFIG.get("OUT_DIR", os.path.dirname(csv_path))
+            os.makedirs(out_dir, exist_ok=True)
+
+            bad_path = os.path.join(out_dir, "removed_positive_center_not_C.csv")
+            pd.DataFrame(removed_bad_pos_rows).to_csv(bad_path, index=False)
+
+            print(f"[Center-C QC] 异常阳性样本明细已保存: {bad_path}")
+
+            print("[Center-C QC] 前 10 条异常样本:")
+            print(
+                pd.DataFrame(removed_bad_pos_rows)
+                [["row_index", "uid", "center_aa", "processed_seq31"]]
+                .head(10)
+                .to_string(index=False)
+            )
+        except Exception as e:
+            print(f"[Center-C QC][WARN] 异常样本明细保存失败: {e}")
+
+    print()
+
     return samples
 
 
-                      
-def augment_samples_for_physchem(samples: List[Sample], per_sample=2, max_muts=2) -> List[Sample]:
-    if per_sample <= 0 or not BIOPY_OK:
-        return samples
-    auged: List[Sample] = []
-    for s in samples:
-        auged.append(s)
-        for i_aug in range(per_sample):
-            new_seq = aug_mutate_seq(s.seq, max_muts=max_muts, keep_center_c=True)
-            new_pc = np.array(physchem_from_seq(new_seq), dtype=np.float32)
-            auged.append(Sample(s.uid+f'#aug{i_aug}', new_seq, s.label, new_pc))
-    return auged
 
 
-                      
 from sklearn.model_selection import StratifiedKFold, train_test_split
+try:
+    from sklearn.model_selection import StratifiedGroupKFold
+except ImportError:
+    StratifiedGroupKFold = None
 
 def split_train_test(samples: List[Sample], test_ratio=0.1, split_seed=2025):
-    y = np.array([s.label for s in samples])
+    if not bool(CONFIG.get('GROUP_SPLIT_BY_PROTEIN', True)):
+        raise RuntimeError(
+            "v3 要求 GROUP_SPLIT_BY_PROTEIN=True；同一蛋白的不同位点不能跨 train/test。"
+        )
+    if StratifiedGroupKFold is None:
+        raise RuntimeError(
+            "当前 sklearn 没有 StratifiedGroupKFold。请升级 scikit-learn；"
+            "本版本不会回退到样本级 split，以免产生蛋白泄漏。"
+        )
+
+    y = np.array([int(s.label) for s in samples], dtype=int)
     idx = np.arange(len(samples))
-    tr_idx, te_idx = train_test_split(idx, test_size=test_ratio, random_state=split_seed, stratify=y)
+    groups = np.array([_base_uid(s.uid) for s in samples], dtype=object)
+
+    n_splits = max(2, int(round(1.0 / float(test_ratio))))
+    splitter = StratifiedGroupKFold(
+        n_splits=n_splits,
+        shuffle=True,
+        random_state=split_seed,
+    )
+
+    global_rate = float(y.mean())
+    best = None
+    for cand_id, (tr_idx, te_idx) in enumerate(splitter.split(idx, y, groups), start=1):
+        actual_ratio = len(te_idx) / max(1, len(idx))
+        te_rate = float(y[te_idx].mean()) if len(te_idx) else 0.0
+        objective = abs(actual_ratio - float(test_ratio)) + 0.5 * abs(te_rate - global_rate)
+        item = (objective, cand_id, tr_idx, te_idx, actual_ratio, te_rate)
+        if best is None or item[0] < best[0]:
+            best = item
+
+    _, cand_id, tr_idx, te_idx, actual_ratio, te_rate = best
+    tr_groups = set(groups[tr_idx].tolist())
+    te_groups = set(groups[te_idx].tolist())
+    overlap = tr_groups & te_groups
+    if overlap:
+        raise RuntimeError(f"Protein group leakage detected: {len(overlap)} groups overlap")
+
+    print(
+        f"[Split] protein-group split enabled; candidate={cand_id}/{n_splits}; "
+        f"target test={test_ratio:.3f}, actual={actual_ratio:.3f}; "
+        f"global pos={global_rate:.3f}, test pos={te_rate:.3f}; "
+        f"train proteins={len(tr_groups)}, test proteins={len(te_groups)}, overlap=0"
+    )
+
     train_samples = [samples[i] for i in tr_idx]
-    test_samples  = [samples[i] for i in te_idx]
+    test_samples = [samples[i] for i in te_idx]
     return train_samples, test_samples
 
 def build_folds(train_samples: List[Sample], n_folds=5, cv_seed=1314):
-    y_tr = np.array([s.label for s in train_samples])
-    skf = StratifiedKFold(n_splits=n_folds, shuffle=True, random_state=cv_seed)
+    if StratifiedGroupKFold is None:
+        raise RuntimeError("需要 StratifiedGroupKFold；拒绝回退到样本级 CV。")
+
+    y_tr = np.array([int(s.label) for s in train_samples], dtype=int)
+    idx = np.arange(len(train_samples))
+    groups = np.array([_base_uid(s.uid) for s in train_samples], dtype=object)
+
+    splitter = StratifiedGroupKFold(
+        n_splits=n_folds,
+        shuffle=True,
+        random_state=cv_seed,
+    )
     folds = []
-    for tr_sub, va_sub in skf.split(np.arange(len(train_samples)), y_tr):
+    seen_val_groups = set()
+    for fold_id, (tr_sub, va_sub) in enumerate(splitter.split(idx, y_tr, groups), start=1):
+        tr_g = set(groups[tr_sub].tolist())
+        va_g = set(groups[va_sub].tolist())
+        overlap = tr_g & va_g
+        if overlap:
+            raise RuntimeError(f"Fold {fold_id}: protein leakage, overlap={len(overlap)}")
+        seen_val_groups.update(va_g)
         tr_list = [train_samples[i] for i in tr_sub]
         va_list = [train_samples[i] for i in va_sub]
+        print(
+            f"[CV] fold={fold_id}: train={len(tr_list)} val={len(va_list)}; "
+            f"train proteins={len(tr_g)} val proteins={len(va_g)}; "
+            f"val pos={np.mean([s.label for s in va_list]):.3f}; overlap=0"
+        )
         folds.append((tr_list, va_list))
+
+    if len(folds) != n_folds:
+        raise RuntimeError(f"Expected {n_folds} folds, got {len(folds)}")
     return folds
 
 
-                 
-def esm_channel_stats(esm_h5: str, samples: List[Sample], uid2idx: dict) -> Tuple[np.ndarray, np.ndarray]:
-    import h5py
+def esm_channel_stats(esm_h5: str,
+                      samples: List[Sample],
+                      uid2idx: dict) -> Tuple[np.ndarray, np.ndarray]:
     idxes = np.array([uid2idx[s.uid] for s in samples], dtype=np.int64)
     uniq_idx, counts = np.unique(idxes, return_counts=True)
-    with h5py.File(esm_h5, 'r') as f:
-        D = f['window_emb'].shape[-1]
-        S  = np.zeros(D, dtype=np.float64)
+
+    store = get_esm_ram_store(esm_h5)
+
+    if store is not None:
+        emb = store['window_emb']
+        valid_all = store.get('valid_mask')
+        D = emb.shape[-1]
+
+        S = np.zeros(D, dtype=np.float64)
         SS = np.zeros(D, dtype=np.float64)
-        n  = 0
+        n = 0
+
         for i, c in zip(uniq_idx, counts):
-            x = f['window_emb'][int(i)].astype(np.float32)
-            S  += x.sum(axis=0)      * c
-            SS += (x**2).sum(axis=0) * c
-            n  += x.shape[0] * c
-        mean = S / n
-        var  = SS / n - mean**2
-        std  = np.sqrt(np.maximum(var, 1e-12))
+            x = np.asarray(emb[int(i)], dtype=np.float32)
+            if CONFIG.get('ESM_NORMALIZE_VALID_ONLY', True) and valid_all is not None:
+                m = np.asarray(valid_all[int(i)]).astype(bool)
+                x_use = x[m]
+            else:
+                x_use = x
+
+            if x_use.shape[0] == 0:
+                continue
+
+            S += x_use.sum(axis=0, dtype=np.float64) * int(c)
+            SS += np.square(x_use, dtype=np.float32).sum(axis=0, dtype=np.float64) * int(c)
+            n += x_use.shape[0] * int(c)
+
+    else:
+        with h5py.File(esm_h5, 'r') as f:
+            D = f['window_emb'].shape[-1]
+            has_mask = 'valid_mask' in f
+            S = np.zeros(D, dtype=np.float64)
+            SS = np.zeros(D, dtype=np.float64)
+            n = 0
+
+            for i, c in zip(uniq_idx, counts):
+                x = f['window_emb'][int(i)].astype(np.float32)
+                if CONFIG.get('ESM_NORMALIZE_VALID_ONLY', True) and has_mask:
+                    m = f['valid_mask'][int(i)].astype(bool)
+                    x_use = x[m]
+                else:
+                    x_use = x
+
+                if x_use.shape[0] == 0:
+                    continue
+
+                S += x_use.sum(axis=0, dtype=np.float64) * int(c)
+                SS += np.square(x_use, dtype=np.float32).sum(axis=0, dtype=np.float64) * int(c)
+                n += x_use.shape[0] * int(c)
+
+    if n <= 0:
+        raise RuntimeError("ESM mean/std 统计没有有效残基。")
+
+    mean = S / n
+    var = SS / n - mean ** 2
+    std = np.sqrt(np.maximum(var, 1e-12))
     return mean.astype(np.float32), std.astype(np.float32)
 
 
 
-def physchem_stats(samples: List[Sample]) -> Tuple[np.ndarray, np.ndarray]:
-    X = np.stack([s.physchem for s in samples], axis=0).astype(np.float32)
-    mean = X.mean(axis=0)
-    std  = X.std(axis=0) + 1e-8
-    return mean, std
 
 
-                               
-                 
-                               
-def make_balanced_by_pos(samples: List[Sample], seed: int = 0) -> List[Sample]:
-    rng = random.Random(seed)
+
+
+def make_fixed_ratio_by_pos(samples: List[Sample],
+                            neg_pos_ratio: Optional[float],
+                            seed: int = 0,
+                            branch_name: Optional[str] = None,
+                            repeat_id: Optional[int] = None,
+                            fold_id: Optional[int] = None) -> List[Sample]:
+
+
+
+
+
+
+
     pos = [s for s in samples if int(s.label) == 1]
     neg = [s for s in samples if int(s.label) == 0]
-    if len(pos) == 0 or len(neg) == 0:
-        return samples[:]
-    if len(neg) >= len(pos):
-        neg_sel = rng.sample(neg, len(pos))
-        balanced = pos + neg_sel
+
+    if not pos or not neg or neg_pos_ratio is None:
+        out = list(samples)
+        random.Random(seed).shuffle(out)
+        return out
+
+    ratio = float(neg_pos_ratio)
+    if ratio <= 0:
+        raise ValueError(f"NEG_POS_RATIO must be > 0 or None, got {neg_pos_ratio}")
+
+    n_neg = min(int(round(len(pos) * ratio)), len(neg))
+    rng = random.Random(seed)
+    neg_pool = sorted(neg, key=lambda s: (str(s.uid), str(s.seq)))
+    rng.shuffle(neg_pool)
+    out = pos + neg_pool[:n_neg]
+    rng.shuffle(out)
+
+    print(
+        f"[Ratio] branch={branch_name} rep={repeat_id} fold={fold_id}: "
+        f"pool pos={len(pos)} neg={len(neg)} -> used pos={len(pos)} neg={n_neg}"
+    )
+    return out
+
+
+
+
+def other_cys_count(seq: str) -> int:
+    seq = ensure_len_31(clean_seq(seq))
+    total = int(seq.count('C'))
+    if len(seq) > 15 and seq[15] == 'C':
+        total -= 1
+    return max(0, total)
+
+def _np_logit(p: np.ndarray, eps: float = 1e-5) -> np.ndarray:
+    p = np.clip(np.asarray(p, dtype=np.float64), eps, 1.0-eps)
+    return np.log(p) - np.log1p(-p)
+
+def _np_sigmoid(x: np.ndarray) -> np.ndarray:
+    x = np.asarray(x, dtype=np.float64)
+    out = np.empty_like(x)
+    pos = x >= 0
+    out[pos] = 1.0 / (1.0 + np.exp(-x[pos]))
+    ex = np.exp(x[~pos])
+    out[~pos] = ex / (1.0 + ex)
+    return out.astype(np.float32)
+
+def fit_robust_score_alignment(val_prob: np.ndarray) -> Dict[str, float]:
+    z = _np_logit(val_prob)
+    med = float(np.median(z))
+    mad = float(np.median(np.abs(z - med)))
+    scale = 1.4826 * mad
+    if not np.isfinite(scale) or scale < float(CONFIG.get('FOLD_ALIGN_EPS', 1e-6)):
+        scale = float(np.std(z))
+    if not np.isfinite(scale) or scale < float(CONFIG.get('FOLD_ALIGN_EPS', 1e-6)):
+        scale = 1.0
+    return {'center': med, 'scale': scale}
+
+def apply_score_alignment(prob: np.ndarray, pars: Dict[str, float]) -> np.ndarray:
+    z = (_np_logit(prob) - float(pars['center'])) / max(float(pars['scale']), 1e-6)
+    return _np_sigmoid(z)
+
+def align_fold_predictions(raw_oof: np.ndarray,
+                           test_prob_folds: List[np.ndarray],
+                           train_samples: List['Sample'],
+                           folds: List[Tuple[List['Sample'], List['Sample']]]) -> Tuple[np.ndarray, np.ndarray, List[Dict[str, float]]]:
+    if not bool(CONFIG.get('FOLD_SCORE_ALIGNMENT', True)):
+        return np.asarray(raw_oof, dtype=np.float32), np.mean(np.stack(test_prob_folds), axis=0).astype(np.float32), []
+    idx_map = {id(s): i for i, s in enumerate(train_samples)}
+    oof_aligned = np.zeros(len(train_samples), dtype=np.float32)
+    test_aligned_folds = []
+    params = []
+    for fold_id, (_, va) in enumerate(folds):
+        ids = np.asarray([idx_map[id(s)] for s in va], dtype=int)
+        pv = np.asarray(raw_oof)[ids]
+        pars = fit_robust_score_alignment(pv)
+        pars['fold'] = int(fold_id + 1)
+        oof_aligned[ids] = apply_score_alignment(pv, pars)
+        test_aligned_folds.append(apply_score_alignment(test_prob_folds[fold_id], pars))
+        params.append(pars)
+    return oof_aligned, np.mean(np.stack(test_aligned_folds), axis=0).astype(np.float32), params
+
+
+
+
+STRUCT_CENTER = 15
+STRUCT_CYS_NAMES = {"CYS", "CYX", "CYM"}
+STRUCT_BACKBONE = {"N", "CA", "C", "O", "OXT"}
+STRUCT_HYDROPHOBIC = {"ALA", "VAL", "ILE", "LEU", "MET", "PHE", "TRP", "PRO"}
+STRUCT_POLAR       = {"SER", "THR", "ASN", "GLN", "TYR", "HIS"}
+STRUCT_POSITIVE    = {"LYS", "ARG", "HIS"}
+STRUCT_NEGATIVE    = {"ASP", "GLU"}
+STRUCT_AROMATIC    = {"PHE", "TRP", "TYR", "HIS"}
+
+STRUCT_AA3_TO_1 = {
+    'ALA':'A','ARG':'R','ASN':'N','ASP':'D','CYS':'C','CYX':'C','CYM':'C',
+    'GLN':'Q','GLU':'E','GLY':'G','HIS':'H','ILE':'I','LEU':'L','LYS':'K',
+    'MET':'M','PHE':'F','PRO':'P','SER':'S','THR':'T','TRP':'W','TYR':'Y',
+    'VAL':'V','SEC':'U','PYL':'O',
+}
+
+STRUCT_CHEM_NAMES = [
+    "sg_present",
+    "other_cys_count",
+    "other_cys_seq_within3",
+    "other_cys_seq_within5",
+    "other_cys_seq_within10",
+    "nearest_other_cys_seq_sep",
+    "min_other_cys_sg_dist",
+    "disulfide_like_lt3A",
+    "other_cys_sg_within4A",
+    "other_cys_sg_within6A",
+    "other_cys_sg_within8A",
+    "neighbor_res_within4A",
+    "neighbor_res_within6A",
+    "neighbor_res_within8A",
+    "neighbor_res_within10A",
+    "min_NO_atom_dist",
+    "NO_atom_count_within4A",
+    "NO_atom_count_within6A",
+    "neighbor8_hydrophobic_frac",
+    "neighbor8_polar_frac",
+    "neighbor8_positive_frac",
+    "neighbor8_negative_frac",
+    "neighbor8_aromatic_frac",
+    "neighbor8_cys_frac",
+    "sg_to_CA_centroid_dist",
+    "mean_3_nearest_residue_dist",
+]
+STRUCT_CHEM_DIM = len(STRUCT_CHEM_NAMES)
+
+_STRUCT_PARSER = PDBParser(QUIET=True) if BIOPDB_OK else None
+
+def _struct_residues_from_pdb(path: str):
+    if _STRUCT_PARSER is None:
+        raise RuntimeError("structure branch 需要 Biopython Bio.PDB；当前环境无法 import PDBParser")
+    st = _STRUCT_PARSER.get_structure(os.path.basename(path), path)
+    residues = []
+    for chain in st[0]:
+        for r in chain:
+            if "CA" in r:
+                residues.append(r)
+    return residues[:MAX_LEN]
+
+def _struct_resname(r) -> str:
+    return r.get_resname().strip().upper()
+
+def _struct_coord(r, name: str) -> Optional[np.ndarray]:
+    if name in r:
+        return r[name].get_coord().astype(np.float32)
+    return None
+
+def _struct_ca(r) -> np.ndarray:
+    return r["CA"].get_coord().astype(np.float32)
+
+def _struct_sidechain_proxy(r) -> np.ndarray:
+    if "CB" in r:
+        return r["CB"].get_coord().astype(np.float32)
+    arr = []
+    for atom in r:
+        name = atom.get_name().strip()
+        if not name.startswith("H") and name not in STRUCT_BACKBONE:
+            arr.append(atom.get_coord())
+    if arr:
+        return np.mean(np.stack(arr), axis=0).astype(np.float32)
+    return _struct_ca(r)
+
+def _struct_heavy_atoms(r) -> np.ndarray:
+    arr = []
+    for atom in r:
+        name = atom.get_name().strip()
+        if not name.startswith("H"):
+            arr.append(atom.get_coord())
+    if not arr:
+        arr = [r["CA"].get_coord()]
+    return np.asarray(arr, dtype=np.float32)
+
+def _struct_normalize_vec(v: np.ndarray, eps: float = 1e-8) -> np.ndarray:
+    return v / (np.linalg.norm(v) + eps)
+
+def _struct_local_frame(r) -> np.ndarray:
+    CA = _struct_ca(r)
+    C = _struct_coord(r, "C")
+    N = _struct_coord(r, "N")
+    if C is None or N is None:
+        return np.eye(3, dtype=np.float32)
+    e1 = _struct_normalize_vec(C - CA)
+    v2 = N - CA
+    v2 = v2 - np.dot(v2, e1) * e1
+    e2 = _struct_normalize_vec(v2)
+    e3 = _struct_normalize_vec(np.cross(e1, e2))
+    return np.stack([e1, e2, e3], axis=1).astype(np.float32)
+
+def _struct_atom_is_NO(atom) -> bool:
+    name = atom.get_name().strip().upper()
+    return bool(name) and name[0] in {"N", "O"}
+
+def _struct_min_dist_point_to_residue(point: np.ndarray, r) -> float:
+    H = _struct_heavy_atoms(r)
+    return float(np.linalg.norm(H - point[None, :], axis=1).min())
+
+def _struct_extract_center_chem(residues) -> np.ndarray:
+    L = len(residues)
+
+    if L <= STRUCT_CENTER or residues[STRUCT_CENTER] is None:
+        return np.zeros(STRUCT_CHEM_DIM, np.float32)
+
+    center = residues[STRUCT_CENTER]
+    sg = _struct_coord(center, "SG")
+    sg_present = float(sg is not None)
+
+    max_dist = 30.0
+    nearest_seq_sep = float(MAX_LEN)
+    min_cys_sg_dist = max_dist
+    min_no_dist = max_dist
+    sg_to_centroid = max_dist
+    mean3 = max_dist
+
+    valid_indices = [
+        j for j, r in enumerate(residues)
+        if r is not None
+    ]
+
+    other_cys_idx = [
+        j for j in valid_indices
+        if j != STRUCT_CENTER and _struct_resname(residues[j]) in STRUCT_CYS_NAMES
+    ]
+
+    other_cys_count = len(other_cys_idx)
+
+    if other_cys_idx:
+        nearest_seq_sep = float(min(abs(j - STRUCT_CENTER) for j in other_cys_idx))
+
+    cys_seq3 = sum(abs(j - STRUCT_CENTER) <= 3 for j in other_cys_idx)
+    cys_seq5 = sum(abs(j - STRUCT_CENTER) <= 5 for j in other_cys_idx)
+    cys_seq10 = sum(abs(j - STRUCT_CENTER) <= 10 for j in other_cys_idx)
+
+    cys_sg_dists: List[float] = []
+    neighbor_dists: List[Tuple[int, float]] = []
+    no_dists: List[float] = []
+
+    if sg is not None:
+        for j in valid_indices:
+            if j == STRUCT_CENTER:
+                continue
+
+            r = residues[j]
+
+            dres = _struct_min_dist_point_to_residue(sg, r)
+            neighbor_dists.append((j, dres))
+
+            if _struct_resname(r) in STRUCT_CYS_NAMES and "SG" in r:
+                dss = float(
+                    np.linalg.norm(
+                        r["SG"].get_coord().astype(np.float32) - sg
+                    )
+                )
+                cys_sg_dists.append(dss)
+
+            for atom in r:
+                name = atom.get_name().strip().upper()
+                if name.startswith("H"):
+                    continue
+                if _struct_atom_is_NO(atom):
+                    no_dists.append(
+                        float(
+                            np.linalg.norm(
+                                atom.get_coord().astype(np.float32) - sg
+                            )
+                        )
+                    )
+
+        if cys_sg_dists:
+            min_cys_sg_dist = float(min(cys_sg_dists))
+
+        if no_dists:
+            min_no_dist = float(min(no_dists))
+
+        ca_xyz = np.stack([
+            _struct_ca(residues[j])
+            for j in valid_indices
+        ])
+
+        sg_to_centroid = float(np.linalg.norm(sg - ca_xyz.mean(axis=0)))
+
+        if neighbor_dists:
+            ds = sorted(d for _, d in neighbor_dists)
+            mean3 = float(np.mean(ds[:min(3, len(ds))]))
+
+    cys4 = sum(d <= 4.0 for d in cys_sg_dists)
+    cys6 = sum(d <= 6.0 for d in cys_sg_dists)
+    cys8 = sum(d <= 8.0 for d in cys_sg_dists)
+
+    n4 = sum(d <= 4.0 for _, d in neighbor_dists)
+    n6 = sum(d <= 6.0 for _, d in neighbor_dists)
+    n8 = sum(d <= 8.0 for _, d in neighbor_dists)
+    n10 = sum(d <= 10.0 for _, d in neighbor_dists)
+
+    no4 = sum(d <= 4.0 for d in no_dists)
+    no6 = sum(d <= 6.0 for d in no_dists)
+
+    neigh8_idx = [j for j, d in neighbor_dists if d <= 8.0]
+    n_neigh = len(neigh8_idx)
+
+    def frac(group):
+        if n_neigh == 0:
+            return 0.0
+        return float(
+            sum(_struct_resname(residues[j]) in group for j in neigh8_idx)
+            / n_neigh
+        )
+
+    x = np.asarray([
+        sg_present,
+        float(other_cys_count),
+        float(cys_seq3),
+        float(cys_seq5),
+        float(cys_seq10),
+        nearest_seq_sep,
+        min_cys_sg_dist,
+        float(min_cys_sg_dist < 3.0),
+        float(cys4),
+        float(cys6),
+        float(cys8),
+        float(n4),
+        float(n6),
+        float(n8),
+        float(n10),
+        min_no_dist,
+        float(no4),
+        float(no6),
+        frac(STRUCT_HYDROPHOBIC),
+        frac(STRUCT_POLAR),
+        frac(STRUCT_POSITIVE),
+        frac(STRUCT_NEGATIVE),
+        frac(STRUCT_AROMATIC),
+        frac(STRUCT_CYS_NAMES),
+        sg_to_centroid,
+        mean3,
+    ], dtype=np.float32)
+
+    if x.shape[0] != STRUCT_CHEM_DIM:
+        raise RuntimeError(
+            f"structure chemistry dim mismatch: {x.shape[0]} vs {STRUCT_CHEM_DIM}"
+        )
+
+    return x
+
+@dataclass
+class StructureFeat:
+    pair13: np.ndarray
+    chem: np.ndarray
+    length: int
+    valid_mask: np.ndarray
+
+    center_is_cys: bool
+    sg_present: bool
+    center_conf: float
+    mean_conf: float
+
+    pdb_sequence: str
+    aligned_sequence: str
+    align_shift: int
+    sequence_match_fraction: float
+    center_pdb_index: int
+def _struct_pdb_sequence(residues) -> str:
+    return ''.join(
+        STRUCT_AA3_TO_1.get(_struct_resname(r), 'X')
+        for r in residues
+    )
+
+def _align_seq31_to_pdb(seq31: str, pdb_seq: str) -> Dict:
+    seq31 = ensure_len_31(clean_seq(seq31))
+    pdb_seq = str(pdb_seq).strip().upper()
+
+    real_positions = [i for i, aa in enumerate(seq31) if aa != '*']
+    total_real = len(real_positions)
+    if total_real <= 0:
+        raise RuntimeError(f"seq31 没有真实残基，无法对齐: {seq31}")
+
+    best = None
+
+    for shift in range(-MAX_LEN, MAX_LEN + 1):
+        compared = 0
+        matched = 0
+        mismatch = 0
+
+        for i in real_positions:
+            aa_csv = seq31[i]
+            j = i + shift
+            if j < 0 or j >= len(pdb_seq):
+                mismatch += 1
+                continue
+
+            compared += 1
+            aa_pdb = pdb_seq[j]
+            if aa_csv == aa_pdb or aa_pdb == 'X':
+                matched += 1
+            else:
+                mismatch += 1
+
+        frac = matched / total_real
+
+        item = {
+            'shift': int(shift),
+            'compared': int(compared),
+            'matched': int(matched),
+            'mismatch': int(mismatch),
+            'total_real': int(total_real),
+            'match_fraction': float(frac),
+        }
+
+        if best is None:
+            best = item
+        else:
+            key = (item['match_fraction'], item['matched'], item['compared'])
+            best_key = (best['match_fraction'], best['matched'], best['compared'])
+            if key > best_key:
+                best = item
+
+    if best is None:
+        raise RuntimeError("无法对齐 seq31 和 PDB sequence")
+
+    return best
+
+def _make_aligned_residue_slots(seq31: str, residues) -> Tuple[List, Dict]:
+    seq31 = ensure_len_31(clean_seq(seq31))
+    pdb_seq = _struct_pdb_sequence(residues)
+
+    align = _align_seq31_to_pdb(seq31, pdb_seq)
+    shift = int(align['shift'])
+
+    slot_residues = [None] * MAX_LEN
+
+    for i, aa_csv in enumerate(seq31):
+        if aa_csv == '*':
+            continue
+
+        j = i + shift
+        if 0 <= j < len(residues):
+            slot_residues[i] = residues[j]
+
+    center_pdb_index = STRUCT_CENTER + shift
+
+    align['center_pdb_index'] = int(center_pdb_index)
+    align['pdb_seq'] = pdb_seq
+
+    return slot_residues, align
+
+def _struct_extract_feat(path: str, seq31: Optional[str] = None) -> StructureFeat:
+    rs_raw = _struct_residues_from_pdb(path)
+
+    if seq31 is None:
+        seq31 = _struct_pdb_sequence(rs_raw)
+        seq31 = ensure_len_31(seq31)
+
+    seq31 = ensure_len_31(clean_seq(seq31))
+
+    slot_residues, align = _make_aligned_residue_slots(seq31, rs_raw)
+
+    valid_mask = np.asarray(
+        [r is not None for r in slot_residues],
+        dtype=np.bool_
+    )
+
+    valid_indices = np.where(valid_mask)[0].tolist()
+
+    if len(valid_indices) == 0:
+        raise RuntimeError(f"No valid residues after alignment: {path}")
+
+    center_residue = slot_residues[STRUCT_CENTER]
+
+    if center_residue is None:
+        raise RuntimeError(
+            f"Aligned center is padding/None: {path}, seq31={seq31}, align={align}"
+        )
+
+    center_name = _struct_resname(center_residue)
+    center_is_cys = center_name in STRUCT_CYS_NAMES
+
+    if bool(CONFIG.get('STRUCTURE_REQUIRE_CENTER_CYS', True)) and not center_is_cys:
+        raise RuntimeError(
+            f"Aligned center residue at CSV index15 is not Cys: "
+            f"{path}, center={center_name}, seq31={seq31}, align={align}"
+        )
+
+
+
+
+    pair13 = np.zeros((13, MAX_LEN, MAX_LEN), np.float32)
+
+    ca = {}
+    sc = {}
+    heavy = {}
+    frames = {}
+
+    for i in valid_indices:
+        r = slot_residues[i]
+        ca[i] = _struct_ca(r)
+        sc[i] = _struct_sidechain_proxy(r)
+        heavy[i] = _struct_heavy_atoms(r)
+        frames[i] = _struct_local_frame(r)
+
+    contact_thresh = float(CONFIG.get('STRUCTURE_CONTACT_THRESH', 8.0))
+
+    for i in valid_indices:
+        for j in valid_indices:
+            d_ca = float(np.linalg.norm(ca[i] - ca[j]))
+            d_sc = float(np.linalg.norm(sc[i] - sc[j]))
+
+            d_min = float(
+                np.linalg.norm(
+                    heavy[i][:, None, :] - heavy[j][None, :, :],
+                    axis=-1
+                ).min()
+            )
+
+            sep = float(abs(i - j))
+            sep_norm = sep / max(MAX_LEN - 1, 1)
+
+            contact = float(d_ca < contact_thresh)
+            long_range = float((sep >= 6) and (d_ca < contact_thresh))
+
+            pair13[0, i, j] = d_ca
+            pair13[1, i, j] = d_min
+            pair13[2, i, j] = d_sc
+            pair13[3, i, j] = contact
+            pair13[4, i, j] = long_range
+            pair13[5, i, j] = sep_norm
+
+            if i == STRUCT_CENTER or j == STRUCT_CENTER:
+                pair13[6, i, j] = 1.0
+            if i == STRUCT_CENTER and j == STRUCT_CENTER:
+                pair13[6, i, j] = 2.0
+
+            Ri = frames[i]
+            Rj = frames[j]
+
+            if i != j:
+                u = _struct_normalize_vec(ca[j] - ca[i])
+                pair13[7:10, i, j] = Ri.T @ u
+
+            rel = Ri.T @ Rj
+            pair13[10, i, j] = rel[0, 0]
+            pair13[11, i, j] = rel[1, 1]
+            pair13[12, i, j] = rel[2, 2]
+
+    chem = _struct_extract_center_chem(slot_residues)
+
+    conf_values = []
+    for i in valid_indices:
+        try:
+            conf_values.append(float(slot_residues[i]["CA"].get_bfactor()))
+        except Exception:
+            pass
+
+    conf = np.asarray(conf_values, dtype=np.float32)
+
+    if len(conf) and np.nanmax(conf) > 1.5:
+        conf = conf / 100.0
+
+    conf = np.clip(conf, 0.0, 1.0)
+
+    try:
+        center_conf = float(center_residue["CA"].get_bfactor())
+        if center_conf > 1.5:
+            center_conf = center_conf / 100.0
+        center_conf = float(np.clip(center_conf, 0.0, 1.0))
+    except Exception:
+        center_conf = 0.0
+
+    mean_conf = float(np.mean(conf)) if len(conf) else 0.0
+
+    aligned_seq = ''.join(
+        STRUCT_AA3_TO_1.get(_struct_resname(r), 'X') if r is not None else '*'
+        for r in slot_residues
+    )
+
+    return StructureFeat(
+        pair13=pair13,
+        chem=chem,
+        length=int(valid_mask.sum()),
+        valid_mask=valid_mask.astype(np.float32),
+
+        center_is_cys=center_is_cys,
+        sg_present=bool("SG" in center_residue),
+        center_conf=center_conf,
+        mean_conf=mean_conf,
+
+        pdb_sequence=_struct_pdb_sequence(rs_raw),
+        aligned_sequence=aligned_seq,
+        align_shift=int(align['shift']),
+        sequence_match_fraction=float(align['match_fraction']),
+        center_pdb_index=int(align['center_pdb_index']),
+    )
+
+class StructureFeatureStore:
+    def __init__(self, samples: List[Sample], pdb_dir: str):
+        if not BIOPDB_OK:
+            raise RuntimeError("structure branch 需要 biopython (Bio.PDB)")
+        if not pdb_dir or not os.path.isdir(pdb_dir):
+            raise FileNotFoundError(f"STRUCTURE PDB_DIR 不存在: {pdb_dir}")
+
+        self.samples = samples
+        self.sample_by_uid = {str(s.uid): s for s in samples}
+        self.pdb_dir = pdb_dir
+        self.cache: Dict[str, StructureFeat] = {}
+        self.path: Dict[str, str] = {}
+        self.match_mode: Dict[str, str] = {}
+
+        exact: Dict[str, str] = {}
+        base_paths: Dict[str, List[str]] = {}
+        for fn in sorted(os.listdir(pdb_dir)):
+            if not fn.lower().endswith('.pdb'):
+                continue
+            stem = fn[:-4]
+            path = os.path.join(pdb_dir, fn)
+            exact[stem] = path
+            base_paths.setdefault(_base_uid(stem), []).append(path)
+
+        sample_base_count: Dict[str, int] = {}
+        for s in samples:
+            b = _base_uid(s.uid)
+            sample_base_count[b] = sample_base_count.get(b, 0) + 1
+
+        unresolved = []
+        for s in samples:
+            uid = str(s.uid)
+            base = _base_uid(uid)
+            if uid in exact:
+                self.path[uid] = exact[uid]
+                self.match_mode[uid] = 'exact_uid'
+                continue
+
+            candidate = exact.get(base)
+            unique_base = base_paths.get(base, [])
+            if candidate is None and len(unique_base) == 1:
+                candidate = unique_base[0]
+
+            if (
+                candidate is not None
+                and bool(CONFIG.get('STRUCTURE_ALLOW_BASE_FALLBACK', True))
+                and sample_base_count.get(base, 0) == 1
+            ):
+                self.path[uid] = candidate
+                self.match_mode[uid] = 'unique_base_fallback'
+            else:
+                reason = 'missing'
+                if candidate is not None and sample_base_count.get(base, 0) > 1:
+                    reason = 'ambiguous_base_fallback_multiple_sites'
+                elif len(unique_base) > 1:
+                    reason = 'ambiguous_multiple_pdbs'
+                unresolved.append({
+                    'uniprotid': uid,
+                    'base_uniprot': base,
+                    'reason': reason,
+                    'n_dataset_sites_for_base': sample_base_count.get(base, 0),
+                    'n_pdbs_for_base': len(unique_base),
+                })
+
+        if unresolved:
+            os.makedirs(CONFIG['OUT_DIR'], exist_ok=True)
+            path = os.path.join(CONFIG['OUT_DIR'], 'structure_unresolved_pdb.csv')
+            pd.DataFrame(unresolved).to_csv(path, index=False)
+            raise RuntimeError(
+                f"Structure branch: {len(unresolved)} samples cannot be mapped safely to PDBs. "
+                f"See {path}. 不会静默复用错误的 base-level PDB。"
+            )
+
+        if bool(CONFIG.get('STRUCTURE_PRELOAD', True)):
+            self.preload_and_qc()
+
+    def get(self, uid: str) -> StructureFeat:
+        uid = str(uid)
+        if uid not in self.cache:
+            s = self.sample_by_uid[uid]
+            seq31 = ensure_len_31(clean_seq(s.seq))
+            self.cache[uid] = _struct_extract_feat(self.path[uid], seq31=seq31)
+        return self.cache[uid]
+
+    def preload_and_qc(self):
+        print(f"[Structure] preload/QC {len(self.samples)} PDB-derived samples ...")
+        qc_rows = []
+        chem_rows = []
+        fatal = []
+
+        for i, s in enumerate(self.samples, 1):
+            try:
+                f = self.get(s.uid)
+            except Exception as e:
+                fatal.append({'uniprotid': s.uid, 'reason': f'parse_error: {e}'})
+                continue
+
+            seq31 = ensure_len_31(clean_seq(s.seq))
+            center_seq_is_c = bool(len(seq31) > STRUCT_CENTER and seq31[STRUCT_CENTER] == 'C')
+
+            aligned_sequence = str(getattr(f, 'aligned_sequence', ''))
+            if len(aligned_sequence) == MAX_LEN:
+                compared = 0
+                matched = 0
+                for j in range(MAX_LEN):
+                    if seq31[j] == '*':
+                        continue
+                    compared += 1
+                    if seq31[j] == aligned_sequence[j] or aligned_sequence[j] == 'X':
+                        matched += 1
+                seq_match_fraction = float(matched / compared) if compared else np.nan
+            else:
+                seq_match_fraction = float(getattr(f, 'sequence_match_fraction', np.nan))
+
+            row = {
+                'uniprotid': s.uid,
+                'base_uniprot': _base_uid(s.uid),
+                'label': int(s.label),
+                'pdb_path': self.path[s.uid],
+                'match_mode': self.match_mode[s.uid],
+                'pdb_length': int(f.length),
+                'sequence_match_fraction': seq_match_fraction,
+                'csv_center_is_cys': int(center_seq_is_c),
+                'pdb_center_is_cys': int(f.center_is_cys),
+                'sg_present': int(f.sg_present),
+                'center_conf': float(f.center_conf),
+                'mean_conf': float(f.mean_conf),
+                'align_shift': int(getattr(f, 'align_shift', 0)),
+                'center_pdb_index': int(getattr(f, 'center_pdb_index', -1)),
+                'pdb_sequence': str(getattr(f, 'pdb_sequence', '')),
+                'aligned_sequence': aligned_sequence,
+            }
+            qc_rows.append(row)
+
+            cr = {'uniprotid': s.uid, 'base_uniprot': _base_uid(s.uid), 'label': int(s.label)}
+            cr.update({name: float(v) for name, v in zip(STRUCT_CHEM_NAMES, f.chem)})
+            chem_rows.append(cr)
+
+            if bool(CONFIG.get('STRUCTURE_REQUIRE_CENTER_CYS', True)) and not f.center_is_cys:
+                fatal.append({'uniprotid': s.uid, 'reason': 'Aligned center residue at CSV index15 is not Cys'})
+
+            if i % 500 == 0 or i == len(self.samples):
+                print(f"  [Structure] {i}/{len(self.samples)}")
+
+        os.makedirs(CONFIG['OUT_DIR'], exist_ok=True)
+        pd.DataFrame(qc_rows).to_csv(os.path.join(CONFIG['OUT_DIR'], 'structure_pdb_qc.csv'), index=False)
+        pd.DataFrame(chem_rows).to_csv(os.path.join(CONFIG['OUT_DIR'], 'structure_chemistry_raw.csv'), index=False)
+
+        if fatal:
+            path = os.path.join(CONFIG['OUT_DIR'], 'structure_fatal_qc.csv')
+            pd.DataFrame(fatal).to_csv(path, index=False)
+            raise RuntimeError(
+                f"Structure QC failed for {len(fatal)} samples; see {path}. "
+                f"最常见原因是 PDB 与 seq31 无法正确对齐，或 aligned center 不是 Cys。"
+            )
+
+        if qc_rows:
+            q = pd.DataFrame(qc_rows)
+            print(
+                f"[Structure QC] exact={int((q.match_mode=='exact_uid').sum())}, "
+                f"base-fallback={int((q.match_mode=='unique_base_fallback').sum())}, "
+                f"center-Cys={int(q.pdb_center_is_cys.sum())}/{len(q)}, "
+                f"SG-present={int(q.sg_present.sum())}/{len(q)}"
+            )
+            finite_match = q['sequence_match_fraction'].dropna()
+            if len(finite_match):
+                print(
+                    f"[Structure QC] median sequence match={finite_match.median():.3f}; "
+                    f"<0.80 count={int((finite_match < 0.80).sum())}"
+                )
+
+_STRUCTURE_STORES: Dict[str, StructureFeatureStore] = {}
+
+
+def prepare_structure_store(
+    samples: List[Sample],
+    source: str = 'main',
+    pdb_dir: Optional[str] = None,
+) -> StructureFeatureStore:
+    source = str(source or 'main')
+
+    if source in _STRUCTURE_STORES:
+        return _STRUCTURE_STORES[source]
+
+    use_dir = pdb_dir if pdb_dir is not None else CONFIG['PDB_DIR']
+
+    if not use_dir:
+        raise RuntimeError(
+            f"StructureFeatureStore source={source}: PDB_DIR 为空"
+        )
+
+    if not os.path.isdir(use_dir):
+        raise FileNotFoundError(
+            f"StructureFeatureStore source={source}: PDB_DIR 不存在: {use_dir}"
+        )
+
+    store = StructureFeatureStore(
+        samples=samples,
+        pdb_dir=use_dir,
+    )
+
+    _STRUCTURE_STORES[source] = store
+    return store
+
+
+def get_structure_store(source: str = 'main') -> StructureFeatureStore:
+    source = str(source or 'main')
+
+    store = _STRUCTURE_STORES.get(source)
+
+    if store is None:
+        raise RuntimeError(
+            f"StructureFeatureStore source={source} 尚未初始化；"
+            f"请先调用 prepare_structure_store(..., source={source!r})"
+        )
+
+    return store
+
+
+def structure_chemistry_stats(
+    samples: List[Sample],
+) -> Tuple[np.ndarray, np.ndarray]:
+
+    store = _STRUCTURE_STORES.get('main')
+
+    if store is None:
+        raise RuntimeError(
+            "structure_chemistry_stats: main StructureFeatureStore 尚未初始化"
+        )
+
+    chem_rows = []
+
+    for s in samples:
+        fuid = s.feat_uid() if hasattr(s, 'feat_uid') else str(s.uid)
+        chem_rows.append(
+            store.get(fuid).chem
+        )
+
+    if not chem_rows:
+        raise RuntimeError(
+            "structure_chemistry_stats: samples 为空"
+        )
+
+    X = np.stack(
+        chem_rows,
+        axis=0,
+    ).astype(np.float32)
+
+    mean = X.mean(axis=0).astype(np.float32)
+    std = X.std(axis=0).astype(np.float32)
+    std = np.where(
+        std < 1e-6,
+        1.0,
+        std,
+    ).astype(np.float32)
+
+    return mean, std
+
+class StructChemMLP(nn.Module):
+    def __init__(self, out_dim: int = 64):
+        super().__init__()
+        hidden = int(CONFIG.get('STRUCTURE_CHEM_HIDDEN', 64))
+        drop = float(CONFIG.get('STRUCTURE_DROPOUT', 0.25))
+        self.net = nn.Sequential(
+            nn.LayerNorm(STRUCT_CHEM_DIM),
+            nn.Linear(STRUCT_CHEM_DIM, hidden),
+            nn.GELU(),
+            nn.Dropout(drop),
+            nn.Linear(hidden, out_dim),
+            nn.GELU(),
+        )
+
+    def forward(self, x):
+        return self.net(x)
+
+class StructSafeAttentionReadout(nn.Module):
+    def __init__(self, dim: int, attn_dim: int = 96):
+        super().__init__()
+        self.a = nn.Linear(dim, attn_dim)
+        self.o = nn.Linear(attn_dim, 1)
+        nn.init.xavier_uniform_(self.o.weight)
+        nn.init.zeros_(self.o.bias)
+
+    def forward(self, h: torch.Tensor, mask: torch.Tensor) -> torch.Tensor:
+        m = mask.bool()
+        score = self.o(torch.tanh(self.a(h))).squeeze(-1)
+        score = score.masked_fill(~m, -1e9)
+        w = F.softmax(score, dim=-1)
+        w = w * m.float()
+        w = w / w.sum(dim=1, keepdim=True).clamp_min(1e-8)
+        out = torch.bmm(w.unsqueeze(1), h).squeeze(1)
+        has_any = m.any(dim=1, keepdim=True).float()
+        return out * has_any
+
+class StructCenterAwareEdgeLayer(nn.Module):
+    def __init__(self, dim: int, edge_dim: int = 22):
+        super().__init__()
+        drop = float(CONFIG.get('STRUCTURE_DROPOUT', 0.20))
+        gate_hidden = max(64, dim // 2)
+        self.edge_gate = nn.Sequential(
+            nn.LayerNorm(edge_dim),
+            nn.Linear(edge_dim, gate_hidden),
+            nn.GELU(),
+            nn.Dropout(drop * 0.5),
+            nn.Linear(gate_hidden, 1),
+        )
+        self.value = nn.Linear(dim, dim)
+        self.out = nn.Linear(dim, dim)
+        self.norm1 = nn.LayerNorm(dim)
+        self.norm2 = nn.LayerNorm(dim)
+        self.ff = nn.Sequential(
+            nn.Linear(dim, dim * 2),
+            nn.GELU(),
+            nn.Dropout(drop),
+            nn.Linear(dim * 2, dim),
+        )
+        self.drop = nn.Dropout(drop)
+
+    def forward(self, h, edge_aug, valid_mask):
+        valid_mask = valid_mask.bool()
+        logits = self.edge_gate(edge_aug).squeeze(-1)
+        pair_valid = valid_mask[:, :, None] & valid_mask[:, None, :]
+        logits = logits.masked_fill(~pair_valid, -1e9)
+
+        w = F.softmax(logits, dim=-1)
+        w = w * pair_valid.float()
+        w = w / w.sum(dim=-1, keepdim=True).clamp_min(1e-8)
+
+        msg = torch.bmm(w, self.value(h))
+        h = self.norm1(h + self.drop(self.out(msg)))
+        h = self.norm2(h + self.drop(self.ff(h)))
+        h = h * valid_mask.unsqueeze(-1).float()
+        return h
+
+class BranchStructureCenterShellGNNChem(nn.Module):
+    def __init__(self):
+        super().__init__()
+        d = int(CONFIG.get('STRUCTURE_EDGE_DIM', 192))
+        n_layers = int(CONFIG.get('STRUCTURE_EDGE_LAYERS', 3))
+        drop = float(CONFIG.get('STRUCTURE_DROPOUT', 0.20))
+        node_scalar_dim = int(CONFIG.get('STRUCTURE_NODE_SCALAR_DIM', 8))
+        edge_aug_dim = int(CONFIG.get('STRUCTURE_EDGE_AUG_DIM', 22))
+        shell_radii = [float(x) for x in CONFIG.get('STRUCTURE_SHELL_RADII', [4., 6., 8., 10.])]
+        shell_attn_dim = int(CONFIG.get('STRUCTURE_SHELL_ATTN_DIM', 96))
+        head_hidden = int(CONFIG.get('STRUCTURE_HEAD_HIDDEN', 384))
+        quality_dim = int(CONFIG.get('STRUCTURE_QUALITY_DIM', 3))
+
+        self.shell_radii = shell_radii
+        self.distance_scale = float(CONFIG.get('STRUCTURE_DISTANCE_SCALE', 20.0))
+
+        self.row_proj = nn.Sequential(
+            nn.Linear(13 * MAX_LEN, d),
+            nn.LayerNorm(d),
+            nn.GELU(),
+        )
+        self.node_proj = nn.Sequential(
+            nn.LayerNorm(node_scalar_dim),
+            nn.Linear(node_scalar_dim, d),
+            nn.GELU(),
+            nn.Dropout(drop * 0.5),
+        )
+        self.input_norm = nn.LayerNorm(d)
+
+        self.layers = nn.ModuleList([
+            StructCenterAwareEdgeLayer(d, edge_aug_dim) for _ in range(n_layers)
+        ])
+
+        self.global_attn = StructSafeAttentionReadout(d, attn_dim=shell_attn_dim)
+        self.shell_attn = nn.ModuleList([
+            StructSafeAttentionReadout(d, attn_dim=shell_attn_dim)
+            for _ in self.shell_radii
+        ])
+
+        self.chem = StructChemMLP(64)
+        self.quality = nn.Sequential(
+            nn.LayerNorm(quality_dim),
+            nn.Linear(quality_dim, 24),
+            nn.GELU(),
+            nn.Dropout(drop * 0.5),
+        )
+
+        fused_dim = d * (2 + len(self.shell_radii)) + 64 + 24
+        self.head = nn.Sequential(
+            nn.LayerNorm(fused_dim),
+            nn.Linear(fused_dim, head_hidden),
+            nn.GELU(),
+            nn.Dropout(drop),
+            nn.Linear(head_hidden, 128),
+            nn.GELU(),
+            nn.Dropout(drop * 0.5),
+            nn.Linear(128, 1),
+        )
+
+    def _center_relative_tensors(self, pair: torch.Tensor, valid: torch.Tensor):
+        B, C, L, _ = pair.shape
+        device = pair.device
+        scale = max(self.distance_scale, 1e-6)
+
+        dca = pair[:, 0, STRUCT_CENTER, :] / scale
+        dheavy = pair[:, 1, STRUCT_CENTER, :] / scale
+        dsc = pair[:, 2, STRUCT_CENTER, :] / scale
+        center_contact = pair[:, 3, STRUCT_CENTER, :]
+        center_long = pair[:, 4, STRUCT_CENTER, :]
+
+        pos = torch.arange(L, device=device, dtype=pair.dtype)
+        rel = (pos - float(STRUCT_CENTER)) / float(max(STRUCT_CENTER, 1))
+        rel = rel.unsqueeze(0).expand(B, -1)
+        abs_rel = rel.abs()
+        is_center = torch.zeros((B, L), device=device, dtype=pair.dtype)
+        is_center[:, STRUCT_CENTER] = 1.0
+
+        node_scalar = torch.stack([
+            rel,
+            abs_rel,
+            is_center,
+            dca,
+            dheavy,
+            dsc,
+            center_contact,
+            center_long,
+        ], dim=-1)
+        node_scalar = node_scalar * valid.unsqueeze(-1).float()
+
+        edge = pair.permute(0, 2, 3, 1).contiguous()
+
+        dca_i = dca[:, :, None].expand(-1, -1, L)
+        dca_j = dca[:, None, :].expand(-1, L, -1)
+        dheavy_i = dheavy[:, :, None].expand(-1, -1, L)
+        dheavy_j = dheavy[:, None, :].expand(-1, L, -1)
+        rel_i = rel[:, :, None].expand(-1, -1, L)
+        rel_j = rel[:, None, :].expand(-1, L, -1)
+        ci = is_center[:, :, None].expand(-1, -1, L)
+        cj = is_center[:, None, :].expand(-1, L, -1)
+
+        extra = torch.stack([
+            dca_i,
+            dca_j,
+            (dca_i - dca_j).abs(),
+            dheavy_i,
+            dheavy_j,
+            rel_i,
+            rel_j,
+            ci,
+            cj,
+        ], dim=-1)
+        edge_aug = torch.cat([edge, extra], dim=-1)
+        return node_scalar, edge_aug
+
+    def forward(self, x):
+        pair = x['pair'].float()
+        chem = x['chem'].float()
+        B, C, L, _ = pair.shape
+
+        if 'valid_mask' in x:
+            valid = x['valid_mask'].to(pair.device).bool()
+        else:
+            lengths = x['length'].long()
+            valid = torch.arange(L, device=pair.device)[None, :] < lengths[:, None]
+
+        node_scalar, edge_aug = self._center_relative_tensors(pair, valid)
+
+        row = pair.permute(0, 2, 1, 3).contiguous().view(B, L, C * L)
+        h = self.row_proj(row) + self.node_proj(node_scalar)
+        h = self.input_norm(h)
+        h = h * valid.unsqueeze(-1).float()
+
+        for layer in self.layers:
+            h = layer(h, edge_aug, valid)
+
+        center = h[:, STRUCT_CENTER, :]
+        global_repr = self.global_attn(h, valid)
+
+        d_center = pair[:, 1, STRUCT_CENTER, :]
+        not_center = torch.ones((1, L), device=pair.device, dtype=torch.bool)
+        not_center[:, STRUCT_CENTER] = False
+
+        shell_repr = []
+        for radius, readout in zip(self.shell_radii, self.shell_attn):
+            smask = valid & not_center & (d_center <= float(radius))
+            shell_repr.append(readout(h, smask))
+
+        if 'quality' in x:
+            quality = x['quality'].to(pair.device).float()
+        else:
+            quality = torch.ones((B, int(CONFIG.get('STRUCTURE_QUALITY_DIM', 3))),
+                                 device=pair.device, dtype=pair.dtype)
+        q = self.quality(quality)
+
+        z = torch.cat([
+            center,
+            global_repr,
+            *shell_repr,
+            self.chem(chem),
+            q,
+        ], dim=1)
+        return self.head(z)
+
+
+
+_BRANCH_SEED_OFFSET = {
+    'physchem': 100_000,
+    'esm_v2': 200_000,
+    'esm_v3': 210_000,
+    'esm_v4': 220_000,
+    'esm_cqt': 230_000,
+    'esm_sitecontrast': 240_000,
+    'kmer': 300_000,
+    'structure': 400_000,
+    'seq_conformer': 500_000,
+}
+
+def branch_fold_seed(branch_name: str, repeat: int, fold_num: int) -> int:
+    if branch_name in _BRANCH_SEED_OFFSET:
+        off = _BRANCH_SEED_OFFSET[branch_name]
     else:
-        pos_sel = rng.sample(pos, len(neg))
-        balanced = pos_sel + neg
-    rng.shuffle(balanced)
-    print(f"[Balance] train subset: pos={len(pos)}, neg={len(neg)} -> balanced={len(balanced)} (1:1 by pos)")
-    return balanced
+        off = 600_000 + int(hashlib.sha256(str(branch_name).encode('utf-8')).hexdigest()[:8], 16) % 100_000
+    return (
+        int(CONFIG.get('RANDOM_SEED', 3407))
+        + int(off)
+        + int(repeat) * 10_007
+        + int(fold_num) * 1_009
+    )
+
+def branch_epochs(branch_name: str) -> int:
+    if branch_name == 'structure':
+        return int(CONFIG.get('EPOCHS_STRUCTURE', CONFIG.get('EPOCHS', 128)))
+    return int(CONFIG.get('EPOCHS', 128))
 
 
-                               
-                 
-                               
+
 @dataclass
 class TrainResult:
     oof_prob: np.ndarray
     test_prob: np.ndarray
     best_states: List[Dict]
     fold_metrics: List[Dict]
+    aligned_oof_prob: Optional[np.ndarray] = None
+    aligned_test_prob: Optional[np.ndarray] = None
 
 CURRENT_REPEAT = 0
+
+def build_branch_model(branch_name: str,
+                       kmer_vocabs: Optional[Dict[int, KmerVocab]] = None) -> nn.Module:
+    device = CONFIG['DEVICE']
+
+    if branch_name == 'physchem':
+        return BranchPhyschem(seq_feat_dim=SEQ_FEAT_DIM, seq_hidden=128).to(device)
+
+    if branch_name == 'physchem_pca':
+        get_physchem_pca_lookup()
+        return BranchPhyschem(
+            seq_feat_dim=int(CONFIG.get('PHYSCHEM_PCA_DIM', 14)),
+            seq_hidden=128,
+        ).to(device)
+
+    with h5py.File(CONFIG['ESM_H5'], 'r') as f:
+        esm_dim = int(f['window_emb'].shape[-1])
+
+    if branch_name == 'esm_cqt':
+        return BranchESMCenterQueryTransformer(
+            D_in=esm_dim,
+            hidden=CONFIG['HIDDEN'],
+            dropout=float(CONFIG.get('ESM_CQT_DROPOUT', 0.15)),
+        ).to(device)
+
+    if branch_name == 'esm_sitecontrast':
+        return BranchESMSiteContrast(
+            D_in=esm_dim,
+            hidden=CONFIG['HIDDEN'],
+            dropout=float(CONFIG.get('ESM_SC_DROPOUT', 0.18)),
+        ).to(device)
+
+    if branch_name == 'esm_sitecontrast_v2':
+        return BranchESMSiteContrastV2(
+            D_in=esm_dim,
+            hidden=CONFIG['HIDDEN'],
+            dropout=float(CONFIG.get('ESM_SC2_DROPOUT', 0.16)),
+        ).to(device)
+
+    if branch_name == 'kmer':
+        if kmer_vocabs is None:
+            raise RuntimeError("branch='kmer' 需要传入 kmer_vocabs")
+        vocab_sizes = {k: v.size for k, v in kmer_vocabs.items()}
+        return BranchKmer(
+            vocab_sizes,
+            embed_dim=CONFIG['KMER_EMBED'],
+            ksize=5,
+            dropout=CONFIG['DROPOUT_KMER'],
+        ).to(device)
+
+    if branch_name == 'structure':
+        return BranchStructureCenterShellGNNChem().to(device)
+
+    raise ValueError(f'Final V12 does not contain branch={branch_name}')
+
+def build_branch_dataset(branch_name: str,
+                         samples: List[Sample],
+                         stats: Optional[Dict[str, np.ndarray]] = None,
+                         uid2idx: Optional[dict] = None,
+                         kmer_vocabs: Optional[Dict[int, KmerVocab]] = None) -> PalmDataset:
+    if branch_name == 'physchem':
+        return PalmDataset(samples, 'physchem')
+    if branch_name == 'physchem_pca':
+        return PalmDataset(samples, 'physchem_pca')
+    if is_esm_branch(branch_name):
+        main_uidmap = uid2idx if uid2idx is not None else build_uid2idx(CONFIG['ESM_H5'])
+        return PalmDataset(
+            samples,
+            'esm',
+            esm_h5=CONFIG['ESM_H5'],
+            norm_stats=stats or {},
+            uid2idx=main_uidmap,
+        )
+    if branch_name == 'kmer':
+        return PalmDataset(samples, 'kmer', kmer_vocabs=kmer_vocabs)
+    if branch_name == 'structure':
+        return PalmDataset(samples, 'structure', norm_stats=stats or {})
+    raise ValueError(f'Final V12 does not contain branch={branch_name}')
+
+def forward_branch_batch(model: nn.Module,
+                         branch_name: str,
+                         batch,
+                         device: str) -> torch.Tensor:
+    if branch_name in {'physchem', 'physchem_pca', 'kmer', 'structure'}:
+        xb = {
+            k: v.to(device, non_blocking=CONFIG['NON_BLOCKING'])
+            for k, v in batch['x'].items()
+        }
+        return model(xb)
+
+    if is_esm_branch(branch_name):
+        xb = batch['x'].to(
+            device,
+            non_blocking=CONFIG['NON_BLOCKING'],
+        ).float()
+        return model(xb)
+
+    raise ValueError(f'Final V12 does not contain branch={branch_name}')
+
+def build_scheduler(optimizer):
+    if not CONFIG.get('USE_PLATEAU_SCHED', False):
+        return None
+    return torch.optim.lr_scheduler.ReduceLROnPlateau(
+        optimizer,
+        mode='max',
+        factor=0.5,
+        patience=2,
+        min_lr=float(CONFIG.get('MIN_LR', 1e-6)),
+    )
+
+def v12_hard_pair_rank_loss(logit: torch.Tensor, y: torch.Tensor, max_pairs: int):
+    pos = logit[y.view(-1) > 0.5].view(-1)
+    neg = logit[y.view(-1) <= 0.5].view(-1)
+    if pos.numel() == 0 or neg.numel() == 0:
+        return None
+    frac = float(CONFIG.get('V12_HARD_PAIR_FRACTION', 0.50))
+    frac = min(max(frac, 0.05), 1.0)
+    nmax = min(pos.numel(), neg.numel(), int(max_pairs))
+    n = max(1, int(math.ceil(nmax * frac)))
+    hp = torch.sort(pos, descending=False).values[:n]
+    hn = torch.sort(neg, descending=True).values[:n]
+    return F.softplus(-(hp - hn)).mean()
 
 def train_one_branch(branch_name: str,
                      train_samples: List[Sample],
@@ -1624,1142 +3663,2612 @@ def train_one_branch(branch_name: str,
                      folds: List[Tuple[List[Sample], List[Sample]]],
                      kmer_vocabs: Optional[Dict[int, KmerVocab]]=None) -> TrainResult:
     device = CONFIG['DEVICE']
-    B = CONFIG['BATCH_SIZE']
-    E = CONFIG['EPOCHS']
-    lr = CONFIG['LR']
+    B = branch_batch_size(branch_name)
+    E = branch_epochs(branch_name)
+    lr = branch_lr(branch_name)
     wd = CONFIG['WEIGHT_DECAY']
 
-    uid2idx = None
-    if branch_name == 'esm':
-        uid2idx = build_uid2idx(CONFIG['ESM_H5'])
+    uid2idx = build_uid2idx(CONFIG['ESM_H5']) if is_esm_branch(branch_name) else None
 
     N_train = len(train_samples)
-    N_test  = len(test_samples)
     oof_prob = np.zeros(N_train, dtype=np.float32)
     test_prob_folds: List[np.ndarray] = []
     best_states: List[Dict] = []
     fold_metrics: List[Dict] = []
 
     all_train_idx = {id(s): i for i, s in enumerate(train_samples)}
-    overall_best_metric = -1.0
-    overall_best_state  = None
-    metric_key = 'best_val_' + CONFIG['PRIMARY_METRIC']
+    overall_best_metric = -float('inf')
+    overall_best_state = None
+    metric_name = CONFIG['PRIMARY_METRIC']
+    metric_key = 'best_val_' + metric_name
 
     for fold_id, (tr_list, va_list) in enumerate(folds):
-        print(f"\n==== [{branch_name}] Fold {fold_id+1}/{len(folds)} ====")
+        fold_num = fold_id + 1
+        train_seed = branch_fold_seed(branch_name, CURRENT_REPEAT, fold_num)
+        set_global_seed(train_seed)
+        print(f"\n==== [{branch_name}] Fold {fold_num}/{len(folds)} ==== seed={train_seed}")
 
-        tr_core = tr_list
-        if CONFIG.get('BALANCE_POS_NEG', False):
-            seed_bal = (CONFIG['CV_SEED'] + CURRENT_REPEAT*10007 + fold_id*97)
-            tr_core = make_balanced_by_pos(tr_list, seed=seed_bal)
+        paths = _fold_paths(branch_name, CURRENT_REPEAT, fold_num)
+        signature = _resume_signature(
+            branch_name, CURRENT_REPEAT, fold_num, final=False
+        )
+
+        va_global_idx = [all_train_idx[id(s)] for s in va_list]
+
+
+
+        if CONFIG.get('RESUME', True) and os.path.exists(paths['done']) and os.path.exists(paths['best']):
+            try:
+                done = np.load(paths['done'], allow_pickle=False)
+                done_sig = str(done['signature'].item())
+                if done_sig == signature:
+                    pv = done['val_prob'].astype(np.float32)
+                    pt = done['test_prob'].astype(np.float32)
+                    best_metric = float(done['best_metric'].item())
+                    best_epoch = int(done['best_epoch'].item()) if 'best_epoch' in done.files else -1
+
+                    if len(pv) != len(va_list) or len(pt) != len(test_samples):
+                        raise RuntimeError("DONE缓存长度与当前fold不一致")
+
+                    oof_prob[va_global_idx] = pv
+                    test_prob_folds.append(pt)
+
+                    best_ckpt = safe_torch_load(paths['best'], map_location='cpu')
+                    best_state = best_ckpt['state_dict']
+                    if best_epoch <= 0:
+                        best_epoch = int(best_ckpt.get('best_epoch', -1))
+                    best_states.append(best_state)
+
+                    fold_metrics.append({
+                        'fold': fold_num,
+                        metric_key: best_metric,
+                        'best_epoch': int(best_epoch),
+                    })
+
+                    if best_metric > overall_best_metric:
+                        overall_best_metric = best_metric
+                        overall_best_state = copy.deepcopy(best_state)
+
+                    print(
+                        f"[Resume] Fold {fold_num} 已完成，直接跳过训练；"
+                        f"{metric_name}={best_metric:.5f}"
+                    )
+                    continue
+            except Exception as e:
+                print(f"[Resume][WARN] DONE缓存读取失败，将重新/续训该fold: {e}")
+
+
+
+        fold_seed = (
+            int(CONFIG.get('NEG_SAMPLE_SEED', CONFIG['CV_SEED']))
+            + CURRENT_REPEAT * 10007
+            + fold_id * 97
+        )
+        tr_core = make_fixed_ratio_by_pos(
+            tr_list,
+            branch_neg_ratio(branch_name),
+            seed=fold_seed,
+            branch_name=branch_name,
+            repeat_id=CURRENT_REPEAT,
+            fold_id=fold_num,
+        )
 
         stats: Dict[str, np.ndarray] = {}
-        if branch_name == 'esm':
-            mean, std = esm_channel_stats(CONFIG['ESM_H5'], tr_core, uid2idx)
+        if is_esm_branch(branch_name):
+            mean, std = esm_channel_stats(CONFIG['ESM_H5'], tr_list, uid2idx)
             stats['esm_mean'] = mean
-            stats['esm_std']  = std
+            stats['esm_std'] = std
 
-        if branch_name == 'physchem':
-            ds_tr = PalmDataset(tr_core,      'physchem', pdb_dir=CONFIG['PDB_DIR'])
-            ds_va = PalmDataset(va_list,      'physchem', pdb_dir=CONFIG['PDB_DIR'])
-            ds_te = PalmDataset(test_samples, 'physchem', pdb_dir=CONFIG['PDB_DIR'])
+        if branch_name == 'structure':
+            cmean, cstd = structure_chemistry_stats(tr_list)
+            stats['struct_chem_mean'] = cmean
+            stats['struct_chem_std'] = cstd
 
-        elif branch_name == 'esm':
-            ds_tr = PalmDataset(tr_core,      'esm', esm_h5=CONFIG['ESM_H5'],
-                                 norm_stats=stats, uid2idx=uid2idx)
-            ds_va = PalmDataset(va_list,      'esm', esm_h5=CONFIG['ESM_H5'],
-                                 norm_stats=stats, uid2idx=uid2idx)
-            ds_te = PalmDataset(test_samples, 'esm', esm_h5=CONFIG['ESM_H5'],
-                                 norm_stats=stats, uid2idx=uid2idx)
-
-        elif branch_name == 'kmer':
-            ds_tr = PalmDataset(tr_core,      'kmer', kmer_vocabs=kmer_vocabs)
-            ds_va = PalmDataset(va_list,      'kmer', kmer_vocabs=kmer_vocabs)
-            ds_te = PalmDataset(test_samples, 'kmer', kmer_vocabs=kmer_vocabs)
-
-        elif branch_name == 'esmfold':
-            ds_tr = PalmDataset(tr_core,      'esmfold', pdb_dir=CONFIG['PDB_DIR'])
-            ds_va = PalmDataset(va_list,      'esmfold', pdb_dir=CONFIG['PDB_DIR'])
-            ds_te = PalmDataset(test_samples, 'esmfold', pdb_dir=CONFIG['PDB_DIR'])
-
-        else:
-            raise ValueError('Unknown branch')
-
-        kw = loader_kwargs()
-        kw_tr = {**kw, 'shuffle': True}
-        kw_ev = {**kw, 'shuffle': False}
-        dl_tr = DataLoader(ds_tr, batch_size=B, **kw_tr)
-        dl_va = DataLoader(ds_va, batch_size=B, **kw_ev)
-        dl_te = DataLoader(ds_te, batch_size=B, **kw_ev)
-
-        if branch_name == 'physchem':
-            model = BranchPhyschem(
-                seq_feat_dim=SEQ_FEAT_DIM,
-                seq_hidden=128,
-            ).to(device)
-
-        elif branch_name == 'esm':
-            with h5py.File(CONFIG['ESM_H5'], 'r') as f:
-                D_in = f['window_emb'].shape[-1]
-            model = BranchESM(
-                D_in=D_in, hidden=CONFIG['HIDDEN'],
-                ksize=CONFIG['VCONV_KSIZE'],
-                n_layers=CONFIG['VCONV_LAYERS'],
-                dropout=CONFIG['DROPOUT'],
-            ).to(device)
-
-        elif branch_name == 'esmfold':
-            model = BranchESMFold(
-                in_channels=6,
-                pair_hidden=128,
-                node_hidden=256,
-                gnn_layers=2,
-            ).to(device)
-        else:          
+        fold_kvoc = kmer_vocabs
+        if branch_name == 'kmer':
             if kmer_vocabs is None:
-                raise RuntimeError("branch='kmer' 需要传入 kmer_vocabs")
-            vocab_sizes = {k: v.size for k, v in kmer_vocabs.items()}
-            model = BranchKmer(vocab_sizes, embed_dim=CONFIG['KMER_EMBED'], ksize=5,
-                               dropout=CONFIG['DROPOUT_KMER']).to(device)
+                raise RuntimeError('kmer 分支缺少全局词表')
+            fold_kvoc = build_active_kmer_views(
+                kmer_vocabs,
+                tr_core,
+                min_count=int(CONFIG.get('KMER_FOLD_MIN_COUNT', 1)),
+            )
 
+        ds_tr = build_branch_dataset(
+            branch_name, tr_core, stats=stats,
+            uid2idx=uid2idx, kmer_vocabs=fold_kvoc
+        )
+        ds_va = build_branch_dataset(
+            branch_name, va_list, stats=stats,
+            uid2idx=uid2idx, kmer_vocabs=fold_kvoc
+        )
+        ds_te = build_branch_dataset(
+            branch_name, test_samples, stats=stats,
+            uid2idx=uid2idx, kmer_vocabs=fold_kvoc
+        )
 
-        wd_eff = CONFIG['WEIGHT_DECAY_KMER'] if branch_name == 'kmer' else wd
-        optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd_eff)
+        kw = loader_kwargs(branch_name)
+        sampler_tr = None
+        if sampler_tr is not None:
+            dl_tr = DataLoader(ds_tr, batch_size=B, sampler=sampler_tr, **kw)
+            if fold_id == 0:
+                print('[Cys-deconfound] neural sampler enabled: label × neighboring-Cys-bin tempered balancing')
+        else:
+            dl_tr = DataLoader(ds_tr, batch_size=B, **{**kw, 'shuffle': True})
+        dl_va = DataLoader(ds_va, batch_size=B, **{**kw, 'shuffle': False})
+        dl_te = DataLoader(ds_te, batch_size=B, **{**kw, 'shuffle': False})
+
+        model = build_branch_model(branch_name, kmer_vocabs)
+        wd_eff = branch_weight_decay(branch_name)
+        optimizer = torch.optim.AdamW(
+            model.parameters(), lr=lr, weight_decay=wd_eff
+        )
+        scheduler = build_scheduler(optimizer)
         criterion = nn.BCEWithLogitsLoss()
         scaler = build_grad_scaler()
 
-        best_metric = -1.0
+        best_metric = -float('inf')
         best_state = None
-        patience = int(CONFIG.get('EARLY_STOP_PATIENCE', 5))
+        best_epoch = 0
+        patience = branch_patience(branch_name)
         no_improve = 0
+        start_epoch = 1
 
-        for epoch in range(1, E + 1):
+
+
+        resumed = _try_load_epoch_resume(
+            paths['last'], signature,
+            model, optimizer, scheduler, scaler, device
+        )
+        if resumed is not None:
+            start_epoch = int(resumed['epoch']) + 1
+            best_metric = float(resumed.get('best_metric', -float('inf')))
+            no_improve = int(resumed.get('no_improve', 0))
+
+            if os.path.exists(paths['best']):
+                best_ckpt = safe_torch_load(paths['best'], map_location='cpu')
+                if best_ckpt.get('signature', signature) == signature:
+                    best_state = best_ckpt['state_dict']
+                    best_epoch = int(best_ckpt.get('best_epoch', best_epoch))
+
+        for epoch in range(start_epoch, E + 1):
             model.train()
+            running_loss = 0.0
+            n_seen = 0
+
             for batch in dl_tr:
                 optimizer.zero_grad(set_to_none=True)
-                y = batch['y'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float().unsqueeze(-1)
-                if branch_name in ('kmer', 'esmfold', 'physchem'):
-                    x = {k: v.to(device, non_blocking=CONFIG['NON_BLOCKING'])
-                         for k, v in batch['x'].items()}
-                    with get_autocast_context():
-                        logit = model(x)
-                        loss = criterion(logit, y)
-                else:
-                    x = batch['x'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float()
-                    with get_autocast_context():
-                        logit = model(x)
-                        loss = criterion(logit, y)
-                backward_with_optional_amp(loss, optimizer, scaler)
+                y = batch['y'].to(
+                    device,
+                    non_blocking=CONFIG['NON_BLOCKING']
+                ).float().unsqueeze(-1)
+
+                with get_autocast_context():
+                    logit = forward_branch_batch(
+                        model, branch_name, batch, device
+                    )
+                    loss = criterion(logit, smooth_binary_targets(y))
+                    rank_alpha, rank_warmup, max_pairs = branch_rank_loss_cfg(branch_name)
+                    if rank_alpha > 0 and epoch > rank_warmup:
+                        if bool(CONFIG.get('V12_HARD_PAIR_RANK', True)):
+                            rank_loss = v12_hard_pair_rank_loss(logit, y, max_pairs)
+                        else:
+                            pos_logits = logit[y.view(-1) > 0.5].view(-1)
+                            neg_logits = logit[y.view(-1) <= 0.5].view(-1)
+                            rank_loss = None
+                            if pos_logits.numel() > 0 and neg_logits.numel() > 0:
+                                n_pair = min(max_pairs, max(pos_logits.numel(), neg_logits.numel()))
+                                ip = torch.randint(pos_logits.numel(), (n_pair,), device=logit.device)
+                                ineg = torch.randint(neg_logits.numel(), (n_pair,), device=logit.device)
+                                rank_loss = F.softplus(-(pos_logits[ip] - neg_logits[ineg])).mean()
+                        if rank_loss is not None:
+                            loss = (1.0 - rank_alpha) * loss + rank_alpha * rank_loss
+
+                backward_with_optional_amp(
+                    loss, optimizer, scaler, model=model
+                )
+                running_loss += float(loss.detach().cpu()) * len(y)
+                n_seen += len(y)
 
             model.eval()
             with torch.no_grad():
                 probs, ys = [], []
                 for batch in dl_va:
-                    y = batch['y'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float().unsqueeze(-1)
-                    if branch_name in ('kmer', 'esmfold', 'physchem'):
-                        x = {k: v.to(device, non_blocking=CONFIG['NON_BLOCKING'])
-                             for k, v in batch['x'].items()}
-                        logit = model(x)
-                    else:
-                        x = batch['x'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float()
-                        logit = model(x)
+                    y = batch['y'].to(
+                        device,
+                        non_blocking=CONFIG['NON_BLOCKING']
+                    ).float().unsqueeze(-1)
+                    logit = forward_branch_batch(
+                        model, branch_name, batch, device
+                    )
                     probs.append(torch.sigmoid(logit).cpu().numpy().ravel())
                     ys.append(y.cpu().numpy().ravel())
-                yv = np.concatenate(ys); pv = np.concatenate(probs)
-                met = calc_metrics(yv, pv)
-                print(f"Epoch {epoch:02d}: val_auc={met['auc']:.4f}")
 
-                cur = met[CONFIG['PRIMARY_METRIC']]
-                if cur > best_metric:
-                    best_metric = cur
-                    best_state = copy.deepcopy(model.state_dict())
-                    no_improve = 0
-                else:
-                    no_improve += 1
-                if no_improve >= patience:
-                    print("Early stopping triggered."); break
+            yv = np.concatenate(ys)
+            pv_epoch = np.concatenate(probs)
+            met = calc_metrics(yv, pv_epoch)
+            cur = float(met[metric_name])
 
-        assert best_state is not None, "best_state 不应为 None"
-        save_dir = os.path.join(CONFIG['MODEL_DIR'], f"repeat{CURRENT_REPEAT}", branch_name)
-        os.makedirs(save_dir, exist_ok=True)
-        fold_path = os.path.join(save_dir, f"{branch_name}_rep{CURRENT_REPEAT}_fold{fold_id+1}_best.pth")
-        torch.save({'state_dict': best_state,
+            if scheduler is not None:
+                scheduler.step(cur)
+
+            lr_now = optimizer.param_groups[0]['lr']
+            print(
+                f"Epoch {epoch:03d}: "
+                f"loss={running_loss/max(1,n_seen):.5f} "
+                f"val_AUROC={met['auc']:.4f} "
+                f"val_AUPRC={met['auprc']:.4f} "
+                f"val_MCC={met['mcc']:.4f} "
+                f"lr={lr_now:.2e}"
+            )
+
+            if cur > best_metric + 1e-8:
+                best_metric = cur
+                best_epoch = int(epoch)
+                best_state = copy.deepcopy(model.state_dict())
+                no_improve = 0
+
+                _atomic_torch_save({
+                    'state_dict': best_state,
                     'branch': branch_name,
-                    'fold': fold_id+1,
+                    'fold': fold_num,
                     'repeat': CURRENT_REPEAT,
-                    'metric': best_metric,
-                    'config': CONFIG}, fold_path)
+                    'metric_name': metric_name,
+                    'metric': float(best_metric),
+                    'best_epoch': int(best_epoch),
+                    'signature': signature,
+                    'config': CONFIG,
+                }, paths['best'])
+            else:
+                no_improve += 1
+
+            _save_epoch_resume(
+                paths['last'], signature, epoch,
+                model, optimizer, scheduler, scaler,
+                best_metric, no_improve
+            )
+
+            if no_improve >= patience:
+                print("Early stopping triggered.")
+                break
+
+        if best_state is None and os.path.exists(paths['best']):
+            best_ckpt = safe_torch_load(paths['best'], map_location='cpu')
+            best_state = best_ckpt['state_dict']
+            best_metric = float(best_ckpt.get('metric', best_metric))
+            best_epoch = int(best_ckpt.get('best_epoch', best_epoch))
+
+        if best_state is None:
+            raise RuntimeError(
+                f"{branch_name} Fold {fold_num}: 没有best_state；"
+                "如果你删除过best.pth，请同时删除对应last_resume.pth后重跑。"
+            )
 
         if best_metric > overall_best_metric:
             overall_best_metric = best_metric
-            overall_best_state  = best_state
+            overall_best_state = copy.deepcopy(best_state)
 
         best_states.append(best_state)
 
-        model.load_state_dict(best_state); model.eval()
+
+
+        model.load_state_dict(best_state)
+        model.eval()
 
         with torch.no_grad():
             probs = []
             for batch in dl_va:
-                if branch_name in ('kmer', 'esmfold', 'physchem'):
-                    x = {k: v.to(device, non_blocking=CONFIG['NON_BLOCKING'])
-                         for k, v in batch['x'].items()}
-                    logit = model(x)
-                else:
-                    x = batch['x'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float()
-                    logit = model(x)
+                logit = forward_branch_batch(
+                    model, branch_name, batch, device
+                )
                 probs.append(torch.sigmoid(logit).cpu().numpy().ravel())
-            pv = np.concatenate(probs)
-        va_global_idx = [all_train_idx[id(s)] for s in va_list]
+            pv = np.concatenate(probs).astype(np.float32)
+
         oof_prob[va_global_idx] = pv
 
         with torch.no_grad():
             probs = []
             for batch in dl_te:
-                if branch_name in ('kmer', 'esmfold', 'physchem'):
-                    x = {k: v.to(device, non_blocking=CONFIG['NON_BLOCKING'])
-                         for k, v in batch['x'].items()}
-                    logit = model(x)
-                else:
-                    x = batch['x'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float()
-                    logit = model(x)
-
+                logit = forward_branch_batch(
+                    model, branch_name, batch, device
+                )
                 probs.append(torch.sigmoid(logit).cpu().numpy().ravel())
-            pt = np.concatenate(probs)
-        test_prob_folds.append(pt)
+            pt = np.concatenate(probs).astype(np.float32)
 
-        fold_metrics.append({'fold': fold_id, metric_key: float(best_metric)})
+        test_prob_folds.append(pt)
+        fold_metrics.append({
+            'fold': fold_num,
+            metric_key: float(best_metric),
+            'best_epoch': int(best_epoch),
+        })
+
+        _atomic_npz_save(
+            paths['done'],
+            signature=np.array(signature),
+            val_prob=pv,
+            test_prob=pt,
+            best_metric=np.array(best_metric, dtype=np.float64),
+            best_epoch=np.array(best_epoch, dtype=np.int32),
+        )
+        print(f"[Resume] Fold {fold_num} DONE -> {paths['done']}")
+
+        if not CONFIG.get('KEEP_LAST_RESUME_AFTER_DONE', True):
+            try:
+                os.remove(paths['last'])
+            except FileNotFoundError:
+                pass
+
+        del model, optimizer
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     if overall_best_state is not None:
-        save_dir = os.path.join(CONFIG['MODEL_DIR'], f"repeat{CURRENT_REPEAT}", branch_name)
+        save_dir = os.path.join(
+            CONFIG['MODEL_DIR'],
+            f"repeat{CURRENT_REPEAT}",
+            branch_name
+        )
         os.makedirs(save_dir, exist_ok=True)
-        best_path = os.path.join(save_dir, f"{branch_name}_rep{CURRENT_REPEAT}_BESTOVERALL.pth")
-        torch.save({'state_dict': overall_best_state,
-                    'branch': branch_name,
-                    'repeat': CURRENT_REPEAT,
-                    'metric': overall_best_metric,
-                    'config': CONFIG}, best_path)
+        best_path = os.path.join(
+            save_dir,
+            f"{branch_name}_rep{CURRENT_REPEAT}_BESTOVERALL.pth"
+        )
+        _atomic_torch_save({
+            'state_dict': overall_best_state,
+            'branch': branch_name,
+            'repeat': CURRENT_REPEAT,
+            'metric_name': metric_name,
+            'metric': overall_best_metric,
+            'config': CONFIG,
+        }, best_path)
+
+    if len(test_prob_folds) != len(folds):
+        raise RuntimeError(
+            f"{branch_name}: 只有 {len(test_prob_folds)}/{len(folds)} 个fold test预测。"
+        )
 
     test_prob = np.mean(np.stack(test_prob_folds, axis=0), axis=0)
 
-    with open(os.path.join(CONFIG['OUT_DIR'], f'{branch_name}_fold_metrics.json'), 'w') as f:
+    with open(
+        os.path.join(CONFIG['OUT_DIR'], f'{branch_name}_fold_metrics.json'),
+        'w'
+    ) as f:
         json.dump(fold_metrics, f, indent=2)
 
-    return TrainResult(oof_prob, test_prob, best_states, fold_metrics)
-
-
-def train_branch_full_on_all(branch_name: str,
-                             train_all: List[Sample],
-                             kmer_vocabs: Optional[Dict[int, KmerVocab]] = None) -> Dict:
-       
-                                                   
-                                                     
-       
-    device = CONFIG['DEVICE']
-    B = CONFIG['BATCH_SIZE']
-    E = CONFIG['EPOCHS']
-    lr = CONFIG['LR']
-    wd = CONFIG['WEIGHT_DECAY']
-
-                           
-    y = np.array([s.label for s in train_all])
-    idx = np.arange(len(train_all))
-    tr_idx, va_idx = train_test_split(
-        idx,
-        test_size=0.1,
-        random_state=CONFIG['SPLIT_SEED'],
-        stratify=y
+    aligned_oof, aligned_test, align_params = align_fold_predictions(
+        oof_prob, test_prob_folds, train_samples, folds
     )
-    tr_list = [train_all[i] for i in tr_idx]
-    va_list = [train_all[i] for i in va_idx]
+    if align_params:
+        align_path = os.path.join(CONFIG['OUT_DIR'], f'{branch_name}_fold_alignment.json')
+        with open(align_path, 'w', encoding='utf-8') as f:
+            json.dump(align_params, f, indent=2, ensure_ascii=False)
 
-                       
-    tr_core = tr_list
-    if CONFIG.get('BALANCE_POS_NEG', False):
-        seed_bal = CONFIG['CV_SEED'] + 777
-        tr_core = make_balanced_by_pos(tr_list, seed=seed_bal)
+    return TrainResult(
+        oof_prob, test_prob, best_states, fold_metrics,
+        aligned_oof_prob=aligned_oof,
+        aligned_test_prob=aligned_test,
+    )
 
-                
+
+
+def _prob_to_logit_np(p: np.ndarray,
+                      eps: Optional[float] = None) -> np.ndarray:
+    eps = float(
+        CONFIG.get('META_LOGIT_CLIP', 1e-4)
+        if eps is None else eps
+    )
+    a = np.clip(np.asarray(p, dtype=np.float64), eps, 1.0 - eps)
+    return np.log(a / (1.0 - a)).astype(np.float32)
+
+def _make_meta_splits(y: np.ndarray, groups: np.ndarray,
+                      n_splits: Optional[int] = None,
+                      seed: Optional[int] = None):
+    if StratifiedGroupKFold is None:
+        raise RuntimeError('Fusion v3 requires StratifiedGroupKFold.')
+    n_splits = int(n_splits or CONFIG.get('META_N_FOLDS', 5))
+    seed = int(seed if seed is not None else CONFIG.get('META_SEED', 9527))
+    idx = np.arange(len(y))
+    splitter = StratifiedGroupKFold(
+        n_splits=n_splits, shuffle=True, random_state=seed
+    )
+    out = []
+    for tr, va in splitter.split(idx, y, groups):
+        if set(groups[tr].tolist()) & set(groups[va].tolist()):
+            raise RuntimeError('Meta-CV protein leakage detected.')
+        out.append((tr, va))
+    return out
+
+def make_interaction_features(prob_mat: np.ndarray,
+                              interaction: bool = True,
+                              logit_clip: Optional[float] = None) -> np.ndarray:
+    z = _prob_to_logit_np(prob_mat, eps=logit_clip).astype(np.float64)
+    return _append_pairwise_interactions(z, interaction=interaction)
+
+
+def _append_pairwise_interactions(X: np.ndarray,
+                                  interaction: bool = True) -> np.ndarray:
+
+    X = np.asarray(X, dtype=np.float64)
+    feats = [X]
+    if interaction:
+        ints = []
+        for i in range(X.shape[1]):
+            for j in range(i + 1, X.shape[1]):
+                ints.append((X[:, i] * X[:, j])[:, None])
+        if ints:
+            feats.append(np.concatenate(ints, axis=1))
+    return np.concatenate(feats, axis=1).astype(np.float32)
+
+
+def _validate_base_probability_matrix(prob_mat: np.ndarray) -> np.ndarray:
+    p = np.asarray(prob_mat, dtype=np.float64)
+    if p.ndim != 2 or p.shape[1] != len(FINAL_EXPERTS):
+        raise ValueError(
+            f'Expected base probability matrix [N,{len(FINAL_EXPERTS)}], got {p.shape}'
+        )
+    return p
+
+
+def _base_probability_columns(prob_mat: np.ndarray, names: List[str]) -> np.ndarray:
+    p = _validate_base_probability_matrix(prob_mat)
+    col = {name: i for i, name in enumerate(FINAL_EXPERTS)}
+    missing = [name for name in names if name not in col]
+    if missing:
+        raise KeyError(f'Unknown base experts: {missing}')
+    return p[:, [col[name] for name in names]]
+
+
+def _fit_logistic_numpy(Xtr, ytr, Xva, C: float):
+    from sklearn.preprocessing import StandardScaler
+    from sklearn.linear_model import LogisticRegression
+    scaler = StandardScaler()
+    Xtr_s = scaler.fit_transform(Xtr)
+    Xva_s = scaler.transform(Xva)
+    clf = LogisticRegression(
+        C=float(C), solver='lbfgs',
+        max_iter=5000, random_state=CONFIG['RANDOM_SEED']
+    )
+    clf.fit(Xtr_s, ytr)
+    p = clf.predict_proba(Xva_s)[:, 1].astype(np.float32)
+    return p, scaler, clf
+
+
+
+
+def _crossfit_logistic_features(X: np.ndarray, y: np.ndarray,
+                                groups: np.ndarray, Xt: np.ndarray,
+                                C_grid: List[float], seed: int,
+                                method: str, feature_recipe: str):
+
+    splits = _make_meta_splits(y, groups, seed=seed)
+    C_grid = [float(c) for c in C_grid]
+    if not C_grid:
+        raise ValueError(f'{method}: empty C grid')
+
+    best = None
+    for C in C_grid:
+        p_oof = np.zeros(len(y), dtype=np.float32)
+        for tr, va in splits:
+            p, _, _ = _fit_logistic_numpy(X[tr], y[tr], X[va], C)
+            p_oof[va] = p
+        auc = float(roc_auc_score(y, p_oof))
+        if best is None or auc > best['auc']:
+            best = {'C': C, 'auc': auc, 'oof_prob': p_oof.copy()}
+
+    p_test, scaler, clf = _fit_logistic_numpy(X, y, Xt, best['C'])
+    params = {
+        'method': method,
+        'feature_recipe': feature_recipe,
+        'C': float(best['C']),
+        'meta_oof_auc': float(best['auc']),
+        'scaler_mean': scaler.mean_.tolist(),
+        'scaler_scale': scaler.scale_.tolist(),
+        'coef': clf.coef_.ravel().tolist(),
+        'intercept': clf.intercept_.ravel().tolist(),
+        'n_features': int(X.shape[1]),
+    }
+    return {'oof_prob': best['oof_prob'], 'test_prob': p_test, 'params': params}
+
+
+def _crossfit_fixed_group_fusion(prob_oof: np.ndarray, y: np.ndarray,
+                                 groups: np.ndarray, prob_test: np.ndarray,
+                                 expert_names: List[str], group_name: str,
+                                 seed: int) -> Dict:
+
+
+
+
+
+
+
+    clip = float(CONFIG.get('GROUP_FUSION_LOGIT_CLIP', 1e-5))
+    C = float(CONFIG.get('GROUP_FUSION_C', 0.1))
+
+    p_oof_group = _base_probability_columns(prob_oof, expert_names)
+    p_test_group = _base_probability_columns(prob_test, expert_names)
+    X = _prob_to_logit_np(p_oof_group, eps=clip).astype(np.float64)
+    Xt = _prob_to_logit_np(p_test_group, eps=clip).astype(np.float64)
+
+    splits = _make_meta_splits(y, groups, seed=seed)
+    fused_oof = np.zeros(len(y), dtype=np.float32)
+    for tr, va in splits:
+        p, _, _ = _fit_logistic_numpy(X[tr], y[tr], X[va], C)
+        fused_oof[va] = p
+
+    fused_test, scaler, clf = _fit_logistic_numpy(X, y, Xt, C)
+    params = {
+        'method': 'fixed_group_logit_lr_cf',
+        'group_name': str(group_name),
+        'expert_names': list(expert_names),
+        'expert_order': list(FINAL_EXPERTS),
+        'C': C,
+        'logit_clip': clip,
+        'scaler_mean': scaler.mean_.tolist(),
+        'scaler_scale': scaler.scale_.tolist(),
+        'coef': clf.coef_.ravel().tolist(),
+        'intercept': clf.intercept_.ravel().tolist(),
+        'n_features': int(X.shape[1]),
+        'oof_auc': float(roc_auc_score(y, fused_oof)),
+        'oof_auprc': float(average_precision_score(y, fused_oof)),
+        'seed': int(seed),
+    }
+    return {
+        'oof_prob': fused_oof,
+        'test_prob': fused_test.astype(np.float32),
+        'params': params,
+    }
+
+
+def fit_first_stage_modality_fusions(prob_oof: np.ndarray, y: np.ndarray,
+                                     groups: np.ndarray, prob_test: np.ndarray,
+                                     seed: int) -> Dict:
+
+    _validate_base_probability_matrix(prob_oof)
+    _validate_base_probability_matrix(prob_test)
+
+    phys = _crossfit_fixed_group_fusion(
+        prob_oof, y, groups, prob_test,
+        expert_names=PHYS_EXPERTS,
+        group_name='physchem_fused',
+        seed=int(seed) + 101,
+    )
+    esm = _crossfit_fixed_group_fusion(
+        prob_oof, y, groups, prob_test,
+        expert_names=ESM_EXPERTS,
+        group_name='esm_fused',
+        seed=int(seed) + 202,
+    )
+
+    col = {name: i for i, name in enumerate(FINAL_EXPERTS)}
+    modality_oof = np.stack([
+        phys['oof_prob'],
+        esm['oof_prob'],
+        np.asarray(prob_oof[:, col['kmer']], dtype=np.float32),
+        np.asarray(prob_oof[:, col['structure']], dtype=np.float32),
+    ], axis=1).astype(np.float32)
+    modality_test = np.stack([
+        phys['test_prob'],
+        esm['test_prob'],
+        np.asarray(prob_test[:, col['kmer']], dtype=np.float32),
+        np.asarray(prob_test[:, col['structure']], dtype=np.float32),
+    ], axis=1).astype(np.float32)
+
+    return {
+        'oof_mat': modality_oof,
+        'test_mat': modality_test,
+        'params': {
+            'expert_order': list(FINAL_EXPERTS),
+            'modality_order': list(FUSED_MODALITIES),
+            'physchem_fused': phys['params'],
+            'esm_fused': esm['params'],
+        },
+        'metrics': {
+            'physchem_fused': calc_metrics(y, phys['oof_prob']),
+            'esm_fused': calc_metrics(y, esm['oof_prob']),
+        },
+    }
+
+
+def crossfit_four_modality_meta(modality_oof: np.ndarray, y: np.ndarray,
+                                groups: np.ndarray, modality_test: np.ndarray,
+                                interaction: bool, method: str,
+                                seed: int = 9527) -> Dict:
+    if modality_oof.ndim != 2 or modality_oof.shape[1] != len(FUSED_MODALITIES):
+        raise ValueError(
+            f'Expected modality matrix [N,{len(FUSED_MODALITIES)}], got {modality_oof.shape}'
+        )
+    if modality_test.ndim != 2 or modality_test.shape[1] != len(FUSED_MODALITIES):
+        raise ValueError(
+            f'Expected test modality matrix [N,{len(FUSED_MODALITIES)}], got {modality_test.shape}'
+        )
+
+    logit_clip = float(CONFIG.get('META_LOGIT_CLIP', 1e-4))
+    X = make_interaction_features(
+        modality_oof, interaction=interaction, logit_clip=logit_clip,
+    )
+    Xt = make_interaction_features(
+        modality_test, interaction=interaction, logit_clip=logit_clip,
+    )
+    out = _crossfit_logistic_features(
+        X, y, groups, Xt,
+        C_grid=CONFIG.get('META_C_GRID', [0.1, 1.0, 10.0]),
+        seed=seed,
+        method=method,
+        feature_recipe=(
+            'four_modality_logits_plus_all_pairwise_products'
+            if interaction else
+            'four_modality_logits_only'
+        ),
+    )
+    out['params']['interaction'] = bool(interaction)
+    out['params']['logit_clip'] = logit_clip
+    out['params']['modality_order'] = list(FUSED_MODALITIES)
+    return out
+
+
+def fit_and_select_fusion(prob_oof: np.ndarray, y: np.ndarray,
+                          groups: np.ndarray, prob_test: np.ndarray,
+                          seed: int) -> Dict:
+
+
+
+
+
+
+
+
+
+
+
+
+    first_stage = fit_first_stage_modality_fusions(
+        prob_oof, y, groups, prob_test, seed=seed,
+    )
+    modality_oof = first_stage['oof_mat']
+    modality_test = first_stage['test_mat']
+
+    runners = {
+        'four_modality_interaction_stack_cf': lambda: crossfit_four_modality_meta(
+            modality_oof, y, groups, modality_test,
+            interaction=True,
+            method='four_modality_interaction_stack_cf',
+            seed=seed,
+        ),
+        'four_modality_linear_stack_cf': lambda: crossfit_four_modality_meta(
+            modality_oof, y, groups, modality_test,
+            interaction=False,
+            method='four_modality_linear_stack_cf',
+            seed=seed,
+        ),
+    }
+    names = list(CONFIG.get('FUSION_CANDIDATES', runners.keys()))
+    if not names:
+        raise ValueError('FUSION_CANDIDATES cannot be empty')
+
+    results = {}
+    for order, name in enumerate(names):
+        if name not in runners:
+            raise KeyError(f'Unknown fusion candidate: {name}')
+        result = runners[name]()
+        result['oof_metrics'] = calc_metrics(y, result['oof_prob'])
+        result['selection_order'] = int(order)
+
+        result['params'] = {
+            'expert_order': list(FINAL_EXPERTS),
+            'modality_order': list(FUSED_MODALITIES),
+            'first_stage': copy.deepcopy(first_stage['params']),
+            'second_stage': result['params'],
+        }
+        results[name] = result
+
+    primary = str(CONFIG.get('FUSION_SELECTION_PRIMARY', 'auc'))
+    secondary = str(CONFIG.get('FUSION_SELECTION_SECONDARY', 'auprc'))
+    if primary not in ('auc', 'auprc') or secondary not in ('auc', 'auprc'):
+        raise ValueError('Fusion selection metrics must be auc or auprc.')
+
+    def selection_key(name: str):
+        m = results[name]['oof_metrics']
+        return (
+            float(m[primary]),
+            float(m[secondary]),
+            -results[name]['selection_order'],
+        )
+
+    selected = max(names, key=selection_key)
+    return {
+        'selected_method': selected,
+        'selected': results[selected],
+        'candidates': results,
+        'modality_oof': modality_oof,
+        'modality_test': modality_test,
+        'first_stage_metrics': first_stage['metrics'],
+        'first_stage_params': first_stage['params'],
+        'selection_rule': (
+            f'max training grouped-OOF {primary}, then {secondary}, '
+            'then declared candidate order'
+        ),
+        'selection_uses_test': False,
+    }
+
+def save_meta_fold_manifest(path: str, uids: List[str], groups: np.ndarray,
+                            y: np.ndarray, shared_seed: int):
+    fold_id = np.zeros(len(y), dtype=np.int32)
+    for fi, (_, va) in enumerate(_make_meta_splits(y, groups, seed=int(shared_seed)), start=1):
+        fold_id[va] = fi
+    if (fold_id <= 0).any():
+        raise RuntimeError('Meta-fold manifest has unassigned samples.')
+    pd.DataFrame({
+        'uniprotid': list(uids),
+        'base_uniprot': np.asarray(groups, dtype=object),
+        'label': np.asarray(y, dtype=int),
+        'meta_fold': fold_id,
+        'meta_seed': int(shared_seed),
+    }).to_csv(path, index=False)
+
+def save_split_manifest(path: str, all_samples: List[Sample],
+                        train_samples: List[Sample], test_samples: List[Sample],
+                        folds: Optional[List[Tuple[List[Sample], List[Sample]]]] = None):
+    tr_ids = {id(s) for s in train_samples}
+    te_ids = {id(s) for s in test_samples}
+    fold_map = {}
+    if folds is not None:
+        for fi, (_, va) in enumerate(folds, start=1):
+            for s in va:
+                fold_map[id(s)] = fi
+    rows = []
+    for s in all_samples:
+        sid = id(s)
+        split = 'train' if sid in tr_ids else ('test' if sid in te_ids else 'unknown')
+        rows.append({
+            'uniprotid': s.uid,
+            'base_uniprot': _base_uid(s.uid),
+            'label': int(s.label),
+            'split': split,
+            'cv_fold': fold_map.get(sid, np.nan) if split == 'train' else np.nan,
+        })
+    pd.DataFrame(rows).to_csv(path, index=False)
+
+def save_kmer_vocab_v3(kvoc: Dict[int, KmerVocab]):
+    if not kvoc:
+        return
+    path = os.path.join(CONFIG['MODEL_DIR'], 'kmer_vocab.json')
+    obj = {
+        'meta': {
+            'csv_path': CONFIG['CSV_PATH'],
+            'test_ratio': CONFIG['TEST_RATIO'],
+            'split_seed': CONFIG['SPLIT_SEED'],
+            'kmers': CONFIG['KMERS'],
+            'kmer_min_count': CONFIG.get('KMER_MIN_COUNT', {}),
+            'architecture': str(CONFIG.get('KMER_VARIANT','v8_position_multiscale')),
+        },
+        'vocabs': {
+            str(k): {
+                'k': int(k),
+                'max_size': kvoc[k].max_size,
+                'min_count': int(getattr(kvoc[k], 'min_count', 1)),
+                'itos': kvoc[k].itos,
+            }
+            for k in sorted(kvoc.keys())
+        }
+    }
+    with open(path, 'w', encoding='utf-8') as f:
+        json.dump(obj, f, ensure_ascii=False)
+    print('[Save] kmer vocab ->', path)
+
+
+
+
+def aggregate_macro_fold_auc(repeat_results: List[Dict[str, TrainResult]], branch: str) -> Tuple[float, float]:
+    vals = []
+    for rr in repeat_results:
+        for row in rr[branch].fold_metrics:
+            if 'best_val_auc' in row:
+                vals.append(float(row['best_val_auc']))
+    if not vals:
+        return float('nan'), float('nan')
+    return float(np.mean(vals)), float(np.std(vals, ddof=1) if len(vals) > 1 else 0.0)
+
+
+
+_HASH_PROJECTOR_CACHE: Dict[Tuple[int, int, int], Tuple[np.ndarray, np.ndarray]] = {}
+
+_AA20 = list('ACDEFGHIKLMNPQRSTVWY')
+_AA20_IDX = {a:i for i,a in enumerate(_AA20)}
+_AA22 = _AA20 + ['X','*']
+_AA22_IDX = {a:i for i,a in enumerate(_AA22)}
+
+
+
+
+
+def _cpu_state_dict(model: nn.Module) -> Dict[str, torch.Tensor]:
+    return {
+        k: v.detach().cpu().clone()
+        for k, v in model.state_dict().items()
+    }
+
+
+def _serialize_kmer_vocabs(kvoc: Dict[int, KmerVocab],
+                            active_views: Optional[Dict[int, KmerVocab]] = None) -> Dict:
+    out = {}
+    for k in sorted(kvoc.keys()):
+        base = kvoc[k]
+        active = None
+        if active_views is not None and k in active_views:
+            active = active_views[k].allowed_tokens
+        out[str(k)] = {
+            'k': int(k),
+            'max_size': base.max_size,
+            'min_count': int(getattr(base, 'min_count', 1)),
+            'itos': list(base.itos),
+            'allowed_tokens': sorted(list(active)) if active is not None else None,
+        }
+    return out
+
+
+def choose_final_epochs(repeat_results: List[Dict[str, TrainResult]]) -> Dict[str, int]:
+
+    scale = float(CONFIG.get('FINAL_EPOCH_SCALE', 1.0))
+    min_epochs = int(CONFIG.get('FINAL_MIN_EPOCHS', 4))
+    out = {}
+
+    for branch in FINAL_EXPERTS:
+        vals = []
+        for rr in repeat_results:
+            for row in rr[branch].fold_metrics:
+                ep = int(row.get('best_epoch', -1))
+                if ep > 0:
+                    vals.append(ep)
+
+        if not vals:
+
+
+            fallback = min(branch_epochs(branch), 32)
+            print(
+                f"[FINAL][WARN] {branch}: CV best_epoch unavailable; "
+                f"fallback={fallback}. Fresh CV is recommended."
+            )
+            chosen = fallback
+        else:
+            chosen = int(round(float(np.median(vals)) * scale))
+
+        chosen = max(min_epochs, min(chosen, branch_epochs(branch)))
+        out[branch] = int(chosen)
+        print(
+            f"[FINAL epoch] {branch:20s} -> {chosen} "
+            f"(CV best epochs={vals})"
+        )
+
+    return out
+
+
+def _predict_branch_model(model: nn.Module,
+                          branch_name: str,
+                          samples: List[Sample],
+                          stats: Optional[Dict[str, np.ndarray]] = None,
+                          uid2idx: Optional[dict] = None,
+                          kmer_vocabs: Optional[Dict[int, KmerVocab]] = None) -> np.ndarray:
+    ds = build_branch_dataset(
+        branch_name,
+        samples,
+        stats=stats or {},
+        uid2idx=uid2idx,
+        kmer_vocabs=kmer_vocabs,
+    )
+    dl = DataLoader(
+        ds,
+        batch_size=branch_batch_size(branch_name),
+        shuffle=False,
+        **loader_kwargs(branch_name),
+    )
+
+    model.eval()
+    probs = []
+    with torch.no_grad():
+        for batch in dl:
+            logit = forward_branch_batch(
+                model,
+                branch_name,
+                batch,
+                CONFIG['DEVICE'],
+            )
+            probs.append(torch.sigmoid(logit).detach().cpu().numpy().ravel())
+
+    if not probs:
+        return np.empty((0,), dtype=np.float32)
+    return np.concatenate(probs).astype(np.float32)
+
+
+def _apply_saved_logistic_features(X: np.ndarray, params: Dict) -> np.ndarray:
+    X = np.asarray(X, dtype=np.float64)
+    expected = int(params.get('n_features', X.shape[1]))
+    if X.ndim != 2 or X.shape[1] != expected:
+        raise RuntimeError(
+            f'Fusion feature mismatch: checkpoint={expected}, runtime={X.shape}'
+        )
+
+    mean = np.asarray(params['scaler_mean'], dtype=np.float64)
+    scale = np.asarray(params['scaler_scale'], dtype=np.float64)
+    scale[np.abs(scale) < 1e-12] = 1.0
+    coef = np.asarray(params['coef'], dtype=np.float64)
+    intercept = float(np.asarray(params['intercept'], dtype=np.float64).ravel()[0])
+    Xs = (X - mean[None, :]) / scale[None, :]
+    return _np_sigmoid(Xs @ coef + intercept).astype(np.float32)
+
+
+def _apply_saved_group_fusion(prob_group: np.ndarray, params: Dict) -> np.ndarray:
+    p = np.asarray(prob_group, dtype=np.float64)
+    if p.ndim != 2:
+        raise ValueError(f'Group probability input must be 2D, got {p.shape}')
+    expected = int(params.get('n_features', p.shape[1]))
+    if p.shape[1] != expected:
+        raise RuntimeError(
+            f"{params.get('group_name', 'group')}: expected {expected} experts, got {p.shape[1]}"
+        )
+    X = _prob_to_logit_np(
+        p,
+        eps=float(params.get('logit_clip', CONFIG.get('GROUP_FUSION_LOGIT_CLIP', 1e-5))),
+    ).astype(np.float64)
+    return _apply_saved_logistic_features(X, params)
+
+
+def apply_saved_first_stage(prob_mat: np.ndarray, params: Dict) -> np.ndarray:
+
+    p = _validate_base_probability_matrix(prob_mat)
+    saved_order = params.get('expert_order')
+    if saved_order is not None and list(saved_order) != list(FINAL_EXPERTS):
+        raise RuntimeError(
+            f'Expert order mismatch: checkpoint={saved_order}, runtime={FINAL_EXPERTS}'
+        )
+    saved_modalities = params.get('modality_order')
+    if saved_modalities is not None and list(saved_modalities) != list(FUSED_MODALITIES):
+        raise RuntimeError(
+            f'Modality order mismatch: checkpoint={saved_modalities}, runtime={FUSED_MODALITIES}'
+        )
+
+    col = {name: i for i, name in enumerate(FINAL_EXPERTS)}
+    first = params.get('first_stage', params)
+
+    phys_cfg = first['physchem_fused']
+    esm_cfg = first['esm_fused']
+    phys_names = list(phys_cfg.get('expert_names', PHYS_EXPERTS))
+    esm_names = list(esm_cfg.get('expert_names', ESM_EXPERTS))
+
+    phys = _apply_saved_group_fusion(
+        p[:, [col[name] for name in phys_names]], phys_cfg,
+    )
+    esm = _apply_saved_group_fusion(
+        p[:, [col[name] for name in esm_names]], esm_cfg,
+    )
+    return np.stack([
+        phys,
+        esm,
+        p[:, col['kmer']].astype(np.float32),
+        p[:, col['structure']].astype(np.float32),
+    ], axis=1).astype(np.float32)
+
+
+def apply_saved_fusion(prob_mat: np.ndarray, method: str,
+                       params: Dict) -> np.ndarray:
+
+    if method not in {
+        'four_modality_interaction_stack_cf',
+        'four_modality_linear_stack_cf',
+    }:
+        raise KeyError(f'Unsupported saved fusion method: {method}')
+
+    modality_mat = apply_saved_first_stage(prob_mat, params)
+    second = params['second_stage']
+    expected_order = second.get('modality_order')
+    if expected_order is not None and list(expected_order) != list(FUSED_MODALITIES):
+        raise RuntimeError(
+            f'Second-stage modality order mismatch: checkpoint={expected_order}, '
+            f'runtime={FUSED_MODALITIES}'
+        )
+    X = make_interaction_features(
+        modality_mat,
+        interaction=bool(second.get('interaction', method == 'four_modality_interaction_stack_cf')),
+        logit_clip=second.get('logit_clip'),
+    ).astype(np.float64)
+    return _apply_saved_logistic_features(X, second)
+
+
+def apply_saved_interaction_meta(prob_mat: np.ndarray, params: Dict) -> np.ndarray:
+
+    return apply_saved_fusion(
+        prob_mat,
+        method='four_modality_interaction_stack_cf',
+        params=params,
+    )
+
+
+def train_single_final_branch(branch_name: str,
+                              train_samples: List[Sample],
+                              eval_samples: List[Sample],
+                              epochs: int,
+                              kmer_vocabs: Optional[Dict[int, KmerVocab]] = None):
+
+
+
+
+
+
+    device = CONFIG['DEVICE']
+    seed = (
+        int(CONFIG.get('FINAL_SEED', 20260828))
+        + int(_BRANCH_SEED_OFFSET.get(branch_name, 600000))
+    )
+    set_global_seed(seed)
+
+    print(
+        f"\n========== [FINAL EXPERT] {branch_name} "
+        f"epochs={epochs} seed={seed} =========="
+    )
+
+    train_core = make_fixed_ratio_by_pos(
+        train_samples,
+        branch_neg_ratio(branch_name),
+        seed=seed + 17,
+        branch_name=branch_name,
+        repeat_id=0,
+        fold_id=0,
+    )
+
+    uid2idx = build_uid2idx(CONFIG['ESM_H5']) if is_esm_branch(branch_name) else None
+
     stats: Dict[str, np.ndarray] = {}
-    uid2idx = None
-    if branch_name == 'esm':
-        uid2idx = build_uid2idx(CONFIG['ESM_H5'])
-        mean, std = esm_channel_stats(CONFIG['ESM_H5'], tr_core, uid2idx)
+    if is_esm_branch(branch_name):
+        mean, std = esm_channel_stats(CONFIG['ESM_H5'], train_samples, uid2idx)
         stats['esm_mean'] = mean
         stats['esm_std'] = std
 
-                                     
-    if branch_name == 'physchem':
-        ds_tr = PalmDataset(tr_core, 'physchem', pdb_dir=CONFIG['PDB_DIR'])
-        ds_va = PalmDataset(va_list, 'physchem', pdb_dir=CONFIG['PDB_DIR'])
+    if branch_name == 'structure':
+        cmean, cstd = structure_chemistry_stats(train_samples)
+        stats['struct_chem_mean'] = cmean
+        stats['struct_chem_std'] = cstd
 
-    elif branch_name == 'esm':
-        ds_tr = PalmDataset(
-            tr_core,
-            'esm',
-            esm_h5=CONFIG['ESM_H5'],
-            norm_stats=stats,
-            uid2idx=uid2idx,
-        )
-        ds_va = PalmDataset(
-            va_list,
-            'esm',
-            esm_h5=CONFIG['ESM_H5'],
-            norm_stats=stats,
-            uid2idx=uid2idx,
+    active_kvoc = kmer_vocabs
+    if branch_name == 'kmer':
+        if kmer_vocabs is None:
+            raise RuntimeError('final kmer expert 缺少 kmer vocab')
+        active_kvoc = build_active_kmer_views(
+            kmer_vocabs,
+            train_core,
+            min_count=int(CONFIG.get('KMER_FOLD_MIN_COUNT', 1)),
         )
 
-    elif branch_name == 'esmfold':
-        ds_tr = PalmDataset(tr_core, 'esmfold', pdb_dir=CONFIG['PDB_DIR'])
-        ds_va = PalmDataset(va_list, 'esmfold', pdb_dir=CONFIG['PDB_DIR'])
+    ds_tr = build_branch_dataset(
+        branch_name,
+        train_core,
+        stats=stats,
+        uid2idx=uid2idx,
+        kmer_vocabs=active_kvoc,
+    )
+    dl_tr = DataLoader(
+        ds_tr,
+        batch_size=branch_batch_size(branch_name),
+        shuffle=True,
+        **loader_kwargs(branch_name),
+    )
 
-    elif branch_name == 'kmer':
-        if kmer_vocabs is None:
-            raise RuntimeError("branch='kmer' 需要传入 kmer_vocabs")
-        ds_tr = PalmDataset(tr_core, 'kmer', kmer_vocabs=kmer_vocabs)
-        ds_va = PalmDataset(va_list, 'kmer', kmer_vocabs=kmer_vocabs)
-
-    else:
-        raise ValueError(f'Unknown branch_name={branch_name}')
-
-    kw = loader_kwargs()
-    dl_tr = DataLoader(ds_tr, batch_size=B, **{**kw, 'shuffle': True})
-    dl_va = DataLoader(ds_va, batch_size=B, **{**kw, 'shuffle': False})
-                  
-    if branch_name == 'physchem':
-        model = BranchPhyschem(
-            seq_feat_dim=SEQ_FEAT_DIM,
-            seq_hidden=128,
-        ).to(device)
-
-    elif branch_name == 'esm':
-        with h5py.File(CONFIG['ESM_H5'], 'r') as f:
-            D_in = f['window_emb'].shape[-1]
-        model = BranchESM(
-            D_in=D_in,
-            hidden=CONFIG['HIDDEN'],
-            ksize=CONFIG['VCONV_KSIZE'],
-            n_layers=CONFIG['VCONV_LAYERS'],
-            dropout=CONFIG['DROPOUT'],
-        ).to(device)
-
-    elif branch_name == 'esmfold':
-        model = BranchESMFold(
-            in_channels=6,                                                     
-            pair_hidden=128,
-            node_hidden=256,
-            gnn_layers=2,
-        ).to(device)
-
-    else:          
-        if kmer_vocabs is None:
-            raise RuntimeError("branch='kmer' 需要传入 kmer_vocabs")
-        vocab_sizes = {k: v.size for k, v in kmer_vocabs.items()}
-        model = BranchKmer(
-            vocab_sizes,
-            embed_dim=CONFIG['KMER_EMBED'],
-            ksize=5,
-            dropout=CONFIG['DROPOUT_KMER'],
-        ).to(device)
-
-
-
-    wd_eff = CONFIG['WEIGHT_DECAY_KMER'] if branch_name == 'kmer' else wd
-    optimizer = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=wd_eff)
+    model = build_branch_model(
+        branch_name,
+        kmer_vocabs=kmer_vocabs if branch_name == 'kmer' else None,
+    )
+    optimizer = torch.optim.AdamW(
+        model.parameters(),
+        lr=branch_lr(branch_name),
+        weight_decay=branch_weight_decay(branch_name),
+    )
     criterion = nn.BCEWithLogitsLoss()
     scaler = build_grad_scaler()
 
-    best_metric = -1.0
-    best_state = None
-    patience = int(CONFIG.get('EARLY_STOP_PATIENCE', 5))
-    no_improve = 0
 
-    for epoch in range(1, E + 1):
-                      
+
+
+    for epoch in range(1, int(epochs) + 1):
         model.train()
+        running_loss = 0.0
+        n_seen = 0
+
         for batch in dl_tr:
             optimizer.zero_grad(set_to_none=True)
-            yb = batch['y'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float().unsqueeze(-1)
+            y = batch['y'].to(
+                device,
+                non_blocking=CONFIG['NON_BLOCKING'],
+            ).float().unsqueeze(-1)
 
-            if branch_name in ('kmer', 'esmfold', 'physchem'):
-                xb = {k: v.to(device, non_blocking=CONFIG['NON_BLOCKING'])
-                      for k, v in batch['x'].items()}
-                with get_autocast_context():
-                    logit = model(xb)
-                    loss = criterion(logit, yb)
-            else:
-                xb = batch['x'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float()
-                with get_autocast_context():
-                    logit = model(xb)
-                    loss = criterion(logit, yb)
+            with get_autocast_context():
+                logit = forward_branch_batch(model, branch_name, batch, device)
+                loss = criterion(logit, smooth_binary_targets(y))
 
-            backward_with_optional_amp(loss, optimizer, scaler)
+                rank_alpha, rank_warmup, max_pairs = branch_rank_loss_cfg(branch_name)
+                if rank_alpha > 0 and epoch > rank_warmup:
+                    rank_loss = v12_hard_pair_rank_loss(logit, y, max_pairs)
+                    if rank_loss is not None:
+                        loss = (1.0 - rank_alpha) * loss + rank_alpha * rank_loss
 
-                      
-        model.eval()
-                      
-        model.eval()
-        with torch.no_grad():
-            probs, ys = [], []
-            for batch in dl_va:
-                yb = batch['y'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float().unsqueeze(-1)
-                if branch_name in ('kmer', 'esmfold', 'physchem'):
-                    xb = {k: v.to(device, non_blocking=CONFIG['NON_BLOCKING'])
-                          for k, v in batch['x'].items()}
-                    logit = model(xb)
-                else:
-                    xb = batch['x'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float()
-                    logit = model(xb)
-
-                probs.append(torch.sigmoid(logit).cpu().numpy().ravel())
-                ys.append(yb.cpu().numpy().ravel())
-
-            yv = np.concatenate(ys)
-            pv = np.concatenate(probs)
-            met = calc_metrics(yv, pv)
-            print(f"[FINAL-{branch_name}] Epoch {epoch:02d}: val_auc={met['auc']:.4f}")
-
-            cur = met[CONFIG['PRIMARY_METRIC']]
-            if cur > best_metric:
-                best_metric = cur
-                best_state = copy.deepcopy(model.state_dict())
-                no_improve = 0
-            else:
-                no_improve += 1
-
-            if no_improve >= patience:
-                print(f"[FINAL-{branch_name}] Early stopping.")
-                break
-
-    assert best_state is not None, "FINAL 阶段 best_state 不应为 None"
-
-                                                     
-    save_dir = os.path.join(CONFIG['MODEL_DIR'], f"repeat{CONFIG['FINAL_REPEAT_ID']}", branch_name)
-    os.makedirs(save_dir, exist_ok=True)
-    best_path = os.path.join(
-        save_dir,
-        f"{branch_name}_rep{CONFIG['FINAL_REPEAT_ID']}_BESTOVERALL.pth"
-    )
-    ckpt = {
-        'state_dict': best_state,
-        'branch': branch_name,
-        'repeat': CONFIG['FINAL_REPEAT_ID'],
-        'metric': float(best_metric),
-        'config': CONFIG,
-    }
-    torch.save(ckpt, best_path)
-    print(f"[Save][FINAL] {branch_name} -> {best_path}")
-    return ckpt
-
-
-                               
-        
-                               
-def main():
-    print('==> 加载数据…')
-    samples = load_csv(CONFIG['CSV_PATH'])
-    samples = summarize_and_dedup(samples)
-
-    train_all, test_samples = split_train_test(samples, CONFIG['TEST_RATIO'], CONFIG['SPLIT_SEED'])
-    print(f"[划分] 训练={len(train_all)}  测试={len(test_samples)}  (SPLIT_SEED={CONFIG['SPLIT_SEED']})")
-
-    enabled_branches = get_enabled_branches()
-    print(f"[Config] 启用的分支 = {enabled_branches}")
-
-    kvoc: Dict[int, KmerVocab] = {}
-    if 'kmer' in enabled_branches:
-        print('==> 构建 k-mer 词表…')
-        for k in CONFIG['KMERS']:
-            max_size = None
-            if k == 5:
-                max_size = CONFIG['TOP_KMER_K5']
-            elif k == 4 and CONFIG['TOP_KMER_K4'] is not None:
-                max_size = CONFIG['TOP_KMER_K4']
-            voc = KmerVocab(k, max_size=max_size)
-            for s in train_all:
-                voc.add_seq(s.seq)
-            voc.finalize()
-            kvoc[k] = voc
-            print(f'k={k}  词表大小: {voc.size}')
-    else:
-        print('[Config] kmer 分支未启用，跳过 k-mer 词表构建。')
-
-
-    y_train = np.array([s.label for s in train_all]).astype(float)
-    y_test  = np.array([s.label for s in test_samples]).astype(float)
-    uids_tr = [s.uid for s in train_all]
-    uids_te = [s.uid for s in test_samples]
-
-    rows_metrics = []
-    last_pred_cache = {}
-
-    global CURRENT_REPEAT
-    for rep in range(CONFIG['N_REPEATS']):
-        CURRENT_REPEAT = rep + 1
-        cv_seed = CONFIG['CV_SEED'] + rep
-        print(f"\n========== 重复 {rep+1}/{CONFIG['N_REPEATS']}（CV_SEED={cv_seed}） ==========")
-        folds = build_folds(train_all, CONFIG['N_FOLDS'], cv_seed=cv_seed)
-
-                              
-        branch_results: Dict[str, TrainResult] = {}
-        for b in enabled_branches:
-            print(f"\n[Repeat {rep+1}] 训练分支: {b}")
-            if b == 'kmer':
-                branch_results[b] = train_one_branch(b, train_all, test_samples, folds, kmer_vocabs=kvoc)
-            else:
-                branch_results[b] = train_one_branch(b, train_all, test_samples, folds)
-
-                                    
-        branch_order = [b for b in BRANCH_ORDER if b in enabled_branches]
-        oof_mat = np.stack([branch_results[b].oof_prob for b in branch_order], axis=1)
-        test_mat = np.stack([branch_results[b].test_prob for b in branch_order], axis=1)
-
-                                 
-        w_best, _ = grid_search_blend_weights(
-            oof_mat, y_train,
-            step=CONFIG['BLEND_GRID_STEP'],
-            refine=CONFIG['BLEND_REFINE'],
-            min_w=CONFIG['BLEND_MIN_WEIGHT']
-        )
-
-        fused_save_dir = os.path.join(CONFIG['MODEL_DIR'], f"repeat{CURRENT_REPEAT}", "fused")
-        os.makedirs(fused_save_dir, exist_ok=True)
-
-                                              
-        def _load_best(branch: str):
-            path = os.path.join(
-                CONFIG['MODEL_DIR'], f"repeat{CURRENT_REPEAT}", branch,
-                f"{branch}_rep{CURRENT_REPEAT}_BESTOVERALL.pth"
+            backward_with_optional_amp(
+                loss,
+                optimizer,
+                scaler,
+                model=model,
             )
-            ckpt = torch.load(path, map_location='cpu')
-            return ckpt['state_dict']
+            running_loss += float(loss.detach().cpu()) * len(y)
+            n_seen += len(y)
 
-        branch_models_for_fused: Dict[str, nn.Module] = {}
-        for b in branch_order:
-            if b == 'physchem':
-                                                    
-                m = BranchPhyschem(
-                    seq_feat_dim=SEQ_FEAT_DIM,
-                    seq_hidden=128,
-                )
-            elif b == 'esm':
-                with h5py.File(CONFIG['ESM_H5'], 'r') as f_h5:
-                    D_in = f_h5['window_emb'].shape[-1]
-                m = BranchESM(
-                    D_in=D_in, hidden=CONFIG['HIDDEN'],
-                    ksize=CONFIG['VCONV_KSIZE'],
-                    n_layers=CONFIG['VCONV_LAYERS'],
-                    dropout=CONFIG['DROPOUT'],
-                )
-            elif b == 'kmer':
-                vocab_sizes = {k: v.size for k, v in kvoc.items()}
-                m = BranchKmer(
-                    vocab_sizes, embed_dim=CONFIG['KMER_EMBED'],
-                    ksize=5, dropout=CONFIG['DROPOUT_KMER'],
-                )
-            elif b == 'esmfold':
-                                             
-                m = BranchESMFold(
-                    in_channels=6,
-                    pair_hidden=128,
-                    node_hidden=256,
-                    gnn_layers=2,
-                )
-            else:
-                raise ValueError(f"未知分支: {b}")
-
-            state_dict = _load_best(b)
-            m.load_state_dict(state_dict)
-            branch_models_for_fused[b] = m
+        print(
+            f"[FINAL {branch_name}] epoch {epoch:03d}/{epochs:03d} "
+            f"loss={running_loss/max(1,n_seen):.6f}"
+        )
 
 
+    raw_train = _predict_branch_model(
+        model,
+        branch_name,
+        train_samples,
+        stats=stats,
+        uid2idx=uid2idx,
+        kmer_vocabs=active_kvoc,
+    )
+    raw_eval = _predict_branch_model(
+        model,
+        branch_name,
+        eval_samples,
+        stats=stats,
+        uid2idx=uid2idx,
+        kmer_vocabs=active_kvoc,
+    )
 
-                 
-        fused_model = FourWayBlend(branch_models_for_fused, weights=w_best)
-        fused_path = os.path.join(fused_save_dir, f"fused_rep{CURRENT_REPEAT}_blend.pth")
-        torch.save({
-            'state_dict': fused_model.state_dict(),
-            'weights': w_best.tolist(),
-            'branches': branch_order,
-            'repeat': CURRENT_REPEAT,
-            'config': CONFIG,
-            'note': f"Prob-level weighted sum of branches: {branch_order}",
-        }, fused_path)
-        print(f"[Save] Fused model saved: {fused_path}")
+    if bool(CONFIG.get('FINAL_SCORE_ALIGNMENT', True)):
+        align = fit_robust_score_alignment(raw_train)
+        aligned_train = apply_score_alignment(raw_train, align)
+        aligned_eval = apply_score_alignment(raw_eval, align)
+    else:
+        align = {'center': 0.0, 'scale': 1.0}
+        aligned_train = raw_train
+        aligned_eval = raw_eval
 
-                                             
-        Xtr = torch.tensor(oof_mat, dtype=torch.float32)                               
-        ytr = torch.tensor(y_train, dtype=torch.float32).unsqueeze(-1)                 
+    preprocess = {
+        'epochs': int(epochs),
+        'seed': int(seed),
+        'score_alignment': {
+            'center': float(align['center']),
+            'scale': float(align['scale']),
+        },
+        'stats': {
+            k: np.asarray(v, dtype=np.float32)
+            for k, v in stats.items()
+        },
+    }
 
-        meta = nn.Linear(Xtr.shape[1], 1)
-        optm = torch.optim.LBFGS(meta.parameters(), lr=1.0, max_iter=100)
-
-        def closure():
-            optm.zero_grad()
-            p = torch.sigmoid(meta(Xtr))
-            loss = F.binary_cross_entropy(p, ytr)
-            loss.backward()
-            return loss
-
-        optm.step(closure)
-
-        meta_state = copy.deepcopy(meta.state_dict())
-
-        with torch.no_grad():
-            oof_prob_stack = torch.sigmoid(
-                meta(torch.tensor(oof_mat, dtype=torch.float32))
-            ).numpy().ravel()
-            test_prob_stack = torch.sigmoid(
-                meta(torch.tensor(test_mat, dtype=torch.float32))
-            ).numpy().ravel()
-
-        fused_stack_model = FiveWayStack(branch_models_for_fused, meta_state_dict=meta_state)
-        fused_stack_path = os.path.join(fused_save_dir, f"fused_rep{CURRENT_REPEAT}_stack.pth")
-        torch.save({
-            'state_dict': fused_stack_model.state_dict(),
-            'branches': branch_order,
-            'repeat': CURRENT_REPEAT,
-            'config': CONFIG,
-            'note': f"Prob-level stacking of branches: {branch_order}",
-        }, fused_stack_path)
-        print(f"[Save] Fused STACK model saved: {fused_stack_path}")
-
-                                     
-        test_prob_blend = (test_mat * w_best[None, :]).sum(axis=1)
-        oof_prob_blend  = (oof_mat  * w_best[None, :]).sum(axis=1)
-
-        auc_blend_te = roc_auc_score(y_test, test_prob_blend) if SKLEARN_OK else 0.0
-        auc_stack_te = roc_auc_score(y_test, test_prob_stack) if SKLEARN_OK else 0.0
-        print(f"[Repeat {rep+1}] blend AUC={auc_blend_te:.4f}, stack AUC={auc_stack_te:.4f}")
-
-        method_probs: Dict[str, Tuple[np.ndarray, np.ndarray]] = {
-            b: (branch_results[b].oof_prob, branch_results[b].test_prob)
-            for b in branch_order
+    if branch_name == 'kmer':
+        preprocess['kmer_active_tokens'] = {
+            str(k): sorted(list(active_kvoc[k].allowed_tokens or []))
+            for k in sorted(active_kvoc.keys())
         }
-        method_probs['blend'] = (oof_prob_blend, test_prob_blend)
-        method_probs['stack'] = (oof_prob_stack, test_prob_stack)
 
-        repeat_out_dir = os.path.join(CONFIG['OUT_DIR'], 'repeat-result')
-        os.makedirs(repeat_out_dir, exist_ok=True)
+    return {
+        'state_dict': _cpu_state_dict(model),
+        'preprocess': preprocess,
+        'raw_train_prob': raw_train,
+        'raw_eval_prob': raw_eval,
+        'train_prob': aligned_train,
+        'eval_prob': aligned_eval,
+    }
 
-        print(f"\n[Repeat {rep+1}] Test metrics:")
-        for m, (_, p_te) in method_probs.items():
-            mt = calc_metrics(y_test, p_te)
-            print(f"  - {m:8s}: AUC={mt['auc']:.4f}, ACC={mt['acc']:.4f}, "
-                  f"SEN={mt['sen']:.4f}, SPE={mt['spe']:.4f}")
 
-        df_scores_blend = make_scores(
-            uids_te,
-            y_test,
-            test_prob_blend,
-            thr=CONFIG['METRIC_THRESHOLD']
-        ).assign(method='blend')
-        df_scores_blend.to_csv(
-            os.path.join(repeat_out_dir, f'test_scores_rep{rep+1}_blend.csv'),
-            index=False
+
+
+
+
+
+
+
+
+def _final_expert_resume_dir() -> str:
+    d = os.path.join(CONFIG['MODEL_DIR'], 'final_single_resume')
+    os.makedirs(d, exist_ok=True)
+    return d
+
+
+def _final_expert_resume_path(branch_name: str) -> str:
+    return os.path.join(_final_expert_resume_dir(), f'{branch_name}_DONE.pth')
+
+
+def _final_expert_resume_signature(branch_name: str, epochs: int) -> str:
+    base = _resume_signature(branch_name, repeat=0, fold=None, final=True)
+    payload = {
+        'base_signature': base,
+        'branch': str(branch_name),
+        'epochs': int(epochs),
+        'resume_version': int(CONFIG.get('RESUME_VERSION', 0)),
+        'final_seed': int(CONFIG.get('FINAL_SEED', 20260828)),
+    }
+    txt = json.dumps(payload, sort_keys=True, ensure_ascii=False)
+    return hashlib.sha256(txt.encode('utf-8')).hexdigest()
+
+
+def _save_final_expert_resume(branch_name: str, epochs: int, result: Dict) -> str:
+    path = _final_expert_resume_path(branch_name)
+    obj = {
+        'signature': _final_expert_resume_signature(branch_name, epochs),
+        'branch': str(branch_name),
+        'epochs': int(epochs),
+        'result': result,
+    }
+    _atomic_torch_save(obj, path)
+    print(f'[FINAL RESUME] saved {branch_name} -> {path}')
+    return path
+
+
+def _try_load_final_expert_resume(branch_name: str, epochs: int):
+    if not bool(CONFIG.get('RESUME', True)):
+        return None
+    path = _final_expert_resume_path(branch_name)
+    if not os.path.isfile(path):
+        return None
+    try:
+        obj = safe_torch_load(path, map_location='cpu')
+    except Exception as e:
+        print(f'[FINAL RESUME][WARN] cannot read {path}: {e}')
+        return None
+    expected = _final_expert_resume_signature(branch_name, epochs)
+    if obj.get('signature') != expected:
+        print(f'[FINAL RESUME] stale cache ignored: {branch_name}')
+        return None
+    result = obj.get('result')
+    required = {'state_dict', 'preprocess', 'train_prob', 'eval_prob'}
+    if not isinstance(result, dict) or not required.issubset(result):
+        print(f'[FINAL RESUME][WARN] incomplete cache ignored: {branch_name}')
+        return None
+    print(f'[FINAL RESUME] HIT {branch_name}; skip retraining -> {path}')
+    return result
+
+def save_single_final_checkpoint(final_expert_results: Dict[str, Dict],
+                                 final_epochs: Dict[str, int],
+                                 kvoc: Dict[int, KmerVocab],
+                                 fusion_method: str,
+                                 fusion_params: Dict,
+                                 cv_summary: Dict,
+                                 deployment_metrics: Dict):
+    expert_states = {
+        b: final_expert_results[b]['state_dict']
+        for b in FINAL_EXPERTS
+    }
+    expert_preprocess = {
+        b: final_expert_results[b]['preprocess']
+        for b in FINAL_EXPERTS
+    }
+
+
+    path_keys = {
+        'CSV_PATH', 'ESM_H5', 'PDB_DIR', 'AAINDEX1_PATH', 'AAINDEX_PCA_PATH',
+        'OUT_DIR', 'MODEL_DIR', 'CACHE_DIR', 'STRUCTURE_CACHE_DIR', 'FINAL_MODEL_PATH',
+    }
+    deploy_config = {
+        k: copy.deepcopy(v)
+        for k, v in CONFIG.items()
+        if k not in path_keys
+    }
+
+    obj = {
+        'format': 'DeepPalmV14SingleCheckpoint',
+        'format_version': 3,
+        'model_name': 'DeepPalm V14 FINAL',
+        'description': '7 base experts -> learned physchem/ESM group fusion -> 4 modality inputs -> final stack',
+        'expert_order': list(FINAL_EXPERTS),
+        'modality_order': list(FUSED_MODALITIES),
+        'expert_state_dicts': expert_states,
+        'expert_preprocess': expert_preprocess,
+        'kmer_vocab': _serialize_kmer_vocabs(
+            kvoc,
+            active_views=None,
+        ),
+        'fusion': {
+            'method': str(fusion_method),
+            'params': copy.deepcopy(fusion_params),
+        },
+        'final_epochs': {k: int(v) for k, v in final_epochs.items()},
+        'config': deploy_config,
+        'cv_summary': cv_summary,
+        'deployment_test_metrics': deployment_metrics,
+    }
+
+    path = CONFIG['FINAL_MODEL_PATH']
+    os.makedirs(os.path.dirname(path), exist_ok=True)
+    _atomic_torch_save(obj, path)
+    print(f"[FINAL MODEL] one-file checkpoint -> {path}")
+    return path
+
+
+
+
+def print_path_config():
+    print("=" * 78)
+    print("[Paths] DeepPalm V14 REPRODUCIBLE")
+    print("[Paths] CSV_PATH            =", CONFIG['CSV_PATH'])
+    print("[Paths] ESM_H5              =", CONFIG['ESM_H5'])
+    print("[Paths] PDB_DIR             =", CONFIG['PDB_DIR'])
+    print("[Paths] AAINDEX1_PATH       =", CONFIG['AAINDEX1_PATH'])
+    print("[Paths] AAINDEX_PCA_PATH    =", CONFIG['AAINDEX_PCA_PATH'])
+    print("[Paths] OUT_DIR             =", CONFIG['OUT_DIR'])
+    print("[Paths] MODEL_DIR           =", CONFIG['MODEL_DIR'])
+    print("[Paths] CACHE_DIR           =", CONFIG['CACHE_DIR'])
+    print("[Paths] STRUCTURE_CACHE_DIR =", CONFIG['STRUCTURE_CACHE_DIR'])
+    print("[Paths] FINAL_MODEL_PATH     =", CONFIG['FINAL_MODEL_PATH'])
+    print("=" * 78)
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+def _deploy_sha256_file(path: str, chunk_size: int = 8 * 1024 * 1024) -> str:
+    h = hashlib.sha256()
+    with open(path, 'rb') as f:
+        while True:
+            b = f.read(chunk_size)
+            if not b:
+                break
+            h.update(b)
+    return h.hexdigest()
+
+
+def _restore_kmer_vocabs_from_checkpoint(obj: Dict) -> Dict[int, KmerVocab]:
+    out: Dict[int, KmerVocab] = {}
+    for k_str, item in obj.items():
+        k = int(item.get('k', k_str))
+        vocab = KmerVocab(k, max_size=item.get('max_size'))
+        vocab.min_count = int(item.get('min_count', 1))
+        vocab.itos = list(item['itos'])
+        vocab.stoi = {tok: i for i, tok in enumerate(vocab.itos)}
+        allowed = item.get('allowed_tokens')
+        vocab.allowed_tokens = set(allowed) if allowed is not None else None
+        out[k] = vocab
+    if not out:
+        raise RuntimeError('checkpoint 中 kmer_vocab 为空')
+    return out
+
+
+def _active_kmer_vocabs_for_final(
+    base_kvoc: Dict[int, KmerVocab],
+    preprocess: Dict,
+) -> Dict[int, KmerVocab]:
+    active_cfg = preprocess.get('kmer_active_tokens', {}) or {}
+    out: Dict[int, KmerVocab] = {}
+    for k, base in base_kvoc.items():
+        view = copy.copy(base)
+        tokens = active_cfg.get(str(k), active_cfg.get(k))
+        view.allowed_tokens = set(tokens) if tokens is not None else None
+        out[k] = view
+    return out
+
+
+def _deploy_prepare_input(branch_name: str, batch, device: str):
+    if branch_name in {'physchem', 'physchem_pca', 'kmer', 'structure'}:
+        return {
+            k: v.to(device, non_blocking=False)
+            for k, v in batch['x'].items()
+        }
+    if is_esm_branch(branch_name):
+        return batch['x'].to(device, non_blocking=False).float()
+    raise ValueError(branch_name)
+
+
+def _predict_script_module(
+    scripted,
+    branch_name: str,
+    samples: List[Sample],
+    preprocess: Dict,
+    uid2idx: Optional[dict],
+    base_kvoc: Optional[Dict[int, KmerVocab]],
+) -> np.ndarray:
+    stats = {
+        k: np.asarray(v, dtype=np.float32)
+        for k, v in (preprocess.get('stats', {}) or {}).items()
+    }
+    active_kvoc = None
+    if branch_name == 'kmer':
+        if base_kvoc is None:
+            raise RuntimeError('kmer deploy validation 缺少 base vocab')
+        active_kvoc = _active_kmer_vocabs_for_final(base_kvoc, preprocess)
+
+    ds = build_branch_dataset(
+        branch_name,
+        samples,
+        stats=stats,
+        uid2idx=uid2idx,
+        kmer_vocabs=active_kvoc,
+    )
+    dl = DataLoader(
+        ds,
+        batch_size=branch_batch_size(branch_name),
+        shuffle=False,
+        num_workers=0,
+        pin_memory=False,
+    )
+
+    device = CONFIG['DEVICE']
+    out = []
+    scripted.eval()
+    with torch.no_grad():
+        for batch in dl:
+            x = _deploy_prepare_input(branch_name, batch, device)
+            logit = scripted(x)
+            out.append(torch.sigmoid(logit).detach().cpu().numpy().ravel())
+    if not out:
+        return np.empty((0,), dtype=np.float32)
+    return np.concatenate(out).astype(np.float32)
+
+
+def _reference_table_for_deploy(
+    reference_csv: str,
+    samples: List[Sample],
+) -> pd.DataFrame:
+    if not reference_csv or not os.path.isfile(reference_csv):
+        raise FileNotFoundError(
+            '部署导出要求已有 single_model_test_predictions_FINAL.csv 用于严格一致性验证。\n'
+            f'当前路径: {reference_csv}'
+        )
+    ref = pd.read_csv(reference_csv)
+    if 'uniprotid' not in ref.columns or 'prob_selected_final' not in ref.columns:
+        raise RuntimeError(
+            'reference predictions 必须至少包含 uniprotid 和 prob_selected_final'
+        )
+    if ref['uniprotid'].astype(str).duplicated().any():
+        raise RuntimeError('reference predictions 中 uniprotid 有重复，拒绝静默对齐')
+
+    wanted = [str(s.uid) for s in samples]
+    ref = ref.copy()
+    ref['uniprotid'] = ref['uniprotid'].astype(str)
+    ref = ref.set_index('uniprotid', drop=False)
+    missing = [u for u in wanted if u not in ref.index]
+    extra = [u for u in ref.index.tolist() if u not in set(wanted)]
+    if missing or extra:
+        raise RuntimeError(
+            f'reference/test UID 不一致: missing={len(missing)}, extra={len(extra)}; '
+            f'missing examples={missing[:10]}, extra examples={extra[:10]}'
+        )
+    return ref.loc[wanted].reset_index(drop=True)
+
+
+def _assert_deploy_close(name: str, got: np.ndarray, expected: np.ndarray) -> Dict:
+    got = np.asarray(got, dtype=np.float64).ravel()
+    expected = np.asarray(expected, dtype=np.float64).ravel()
+    if got.shape != expected.shape:
+        raise RuntimeError(f'{name}: shape mismatch {got.shape} vs {expected.shape}')
+    diff = np.abs(got - expected)
+    max_abs = float(diff.max()) if diff.size else 0.0
+    mean_abs = float(diff.mean()) if diff.size else 0.0
+    pearson = (
+        float(np.corrcoef(got, expected)[0, 1])
+        if len(got) > 1 and np.std(got) > 0 and np.std(expected) > 0
+        else 1.0
+    )
+    rec = {
+        'name': name,
+        'n': int(len(got)),
+        'max_abs_diff': max_abs,
+        'mean_abs_diff': mean_abs,
+        'pearson': pearson,
+    }
+    print(
+        f"[DEPLOY VERIFY] {name:28s} n={len(got):6d} "
+        f"max={max_abs:.3e} mean={mean_abs:.3e} r={pearson:.12f}"
+    )
+    if max_abs > float(DEPLOY_VERIFY_MAX_ABS):
+        raise RuntimeError(
+            f'{name}: max_abs_diff={max_abs:.3e} > {DEPLOY_VERIFY_MAX_ABS:.3e}'
+        )
+    if mean_abs > float(DEPLOY_VERIFY_MEAN_ABS):
+        raise RuntimeError(
+            f'{name}: mean_abs_diff={mean_abs:.3e} > {DEPLOY_VERIFY_MEAN_ABS:.3e}'
+        )
+    return rec
+
+
+
+
+
+
+
+
+
+
+
+class _DeploySafeESMSiteContrastV2(nn.Module):
+    def __init__(self, source: nn.Module):
+        super().__init__()
+        self.radii = tuple(int(r) for r in source.radii)
+        self.drop = float(source.drop)
+        self.input_norm = copy.deepcopy(source.input_norm)
+        self.input_proj = copy.deepcopy(source.input_proj)
+        self.pos_emb = copy.deepcopy(source.pos_emb)
+        self.radius_relation = copy.deepcopy(source.radius_relation)
+        self.radius_emb = copy.deepcopy(source.radius_emb)
+        self.radius_gate = copy.deepcopy(source.radius_gate)
+        self.site_relation = copy.deepcopy(source.site_relation)
+        self.signed_distance_bias = copy.deepcopy(source.signed_distance_bias)
+        self.side_emb = copy.deepcopy(source.side_emb)
+        self.site_score = copy.deepcopy(source.site_score)
+        self.site_value = copy.deepcopy(source.site_value)
+
+        self.proj_center = copy.deepcopy(source.proj['center'])
+        self.proj_global_ctx = copy.deepcopy(source.proj['global'])
+        self.proj_left = copy.deepcopy(source.proj['left'])
+        self.proj_right = copy.deepcopy(source.proj['right'])
+        self.proj_side = copy.deepcopy(source.proj['side'])
+        self.head = copy.deepcopy(source.head)
+
+    @staticmethod
+    def _mean(h, mask):
+        m = mask.float().unsqueeze(-1)
+        den = m.sum(1).clamp_min(1.0)
+        return (h * m).sum(1) / den
+
+    def forward(self, x):
+        valid = (x.abs().sum(dim=1) > 0)
+        xt = x.transpose(1, 2)
+        B, L, _ = xt.shape
+        c = min(15, L - 1)
+        h = self.input_proj(self.input_norm(xt))
+        pos = torch.arange(L, device=x.device)
+        h = h + self.pos_emb(pos).unsqueeze(0)
+        h = h * valid.unsqueeze(-1).float()
+        center = h[:, c]
+        other = valid.clone()
+        other[:, c] = False
+        idx = pos.unsqueeze(0)
+        left_all_m = other & (idx < c)
+        right_all_m = other & (idx > c)
+        left_all = self._mean(h, left_all_m)
+        right_all = self._mean(h, right_all_m)
+        glob = self._mean(h, other)
+        side = left_all - right_all
+        dist = (idx - c).abs()
+        rts = []
+        rvalid = []
+        for r in self.radii:
+            lm = other & (dist <= r)
+            lmask = lm & (idx < c)
+            rmask = lm & (idx > c)
+            local = self._mean(h, lm)
+            left = self._mean(h, lmask)
+            right = self._mean(h, rmask)
+            rel = torch.cat([
+                center, local, left, right,
+                center - local, center - left, center - right,
+                left - right, (left - right).abs(),
+            ], dim=-1)
+            rts.append(self.radius_relation(rel))
+            rvalid.append(lm.any(dim=1))
+        rt = torch.stack(rts, 1)
+        rv = torch.stack(rvalid, 1)
+        rid = torch.arange(len(self.radii), device=x.device)
+        rt = rt + self.radius_emb(rid).unsqueeze(0)
+        empty = ~rv.any(1)
+        if empty.any():
+            rv = rv.clone()
+            rv[empty, 0] = True
+        gl = self.radius_gate(rt).squeeze(-1).masked_fill(~rv, -1e4)
+        gw = F.softmax(gl, dim=1)
+        radius_fused = (rt * gw.unsqueeze(-1)).sum(1)
+        radius_max = rt.masked_fill(~rv.unsqueeze(-1), -1e4).max(1).values
+
+        ce = center.unsqueeze(1).expand(-1, L, -1)
+        delta = h - ce
+        signed = ((idx - c) + (MAX_LEN - 1)).clamp(0, 2 * MAX_LEN - 2).long().squeeze(0)
+        side_id = torch.zeros(L, device=x.device, dtype=torch.long)
+        side_id[pos < c] = 1
+        side_id[pos > c] = 2
+        sh = self.site_relation(torch.cat([
+            delta, delta.abs(), h * ce, h,
+        ], dim=-1)) + self.side_emb(side_id).unsqueeze(0)
+        slog = self.site_score(sh).squeeze(-1) + self.signed_distance_bias(signed).view(1, L)
+        slog = slog.masked_fill(~other, -1e4)
+        att = F.softmax(slog, dim=1) * other.float()
+        att = att / att.sum(1, keepdim=True).clamp_min(1e-8)
+        sp = (self.site_value(sh) * att.unsqueeze(-1)).sum(1) * other.any(1).float().unsqueeze(-1)
+        feat = torch.cat([
+            self.proj_center(center),
+            self.proj_global_ctx(glob),
+            radius_fused,
+            radius_max,
+            sp,
+            self.proj_side(side),
+            self.proj_left(left_all),
+            self.proj_right(right_all),
+        ], dim=-1)
+        return self.head(feat)
+
+
+def _deploy_trace_model(branch_name: str, model: nn.Module) -> nn.Module:
+    if branch_name == 'esm_sitecontrast_v2':
+        safe = _DeploySafeESMSiteContrastV2(model)
+        safe = safe.to(CONFIG['DEVICE'])
+        safe.eval()
+        return safe
+    return model
+
+
+def _deploy_cache_signature(branch_name: str, final_pth_path: str,
+                            reference_csv: str) -> Dict:
+    return {
+        'export_version': int(DEPLOY_EXPORT_VERSION),
+        'branch': str(branch_name),
+        'final_pth_sha256': _deploy_sha256_file(final_pth_path),
+        'reference_sha256': _deploy_sha256_file(reference_csv),
+    }
+
+
+def _deploy_cache_paths(branch_name: str):
+    os.makedirs(DEPLOY_CACHE_DIR, exist_ok=True)
+    return (
+        os.path.join(DEPLOY_CACHE_DIR, f'{branch_name}.ts'),
+        os.path.join(DEPLOY_CACHE_DIR, f'{branch_name}.json'),
+    )
+
+
+def _deploy_cache_valid(branch_name: str, final_pth_path: str,
+                        reference_csv: str) -> bool:
+    if not bool(DEPLOY_RESUME):
+        return False
+    ts_path, meta_path = _deploy_cache_paths(branch_name)
+    if not (os.path.isfile(ts_path) and os.path.isfile(meta_path)):
+        return False
+    try:
+        with open(meta_path, 'r', encoding='utf-8') as f:
+            got = json.load(f)
+        return got == _deploy_cache_signature(
+            branch_name, final_pth_path, reference_csv
+        )
+    except Exception:
+        return False
+
+
+def _mark_deploy_cache_done(branch_name: str, final_pth_path: str,
+                            reference_csv: str):
+    _, meta_path = _deploy_cache_paths(branch_name)
+    tmp = meta_path + '.tmp'
+    with open(tmp, 'w', encoding='utf-8') as f:
+        json.dump(
+            _deploy_cache_signature(branch_name, final_pth_path, reference_csv),
+            f, indent=2, ensure_ascii=False,
+        )
+    os.replace(tmp, meta_path)
+
+def _trace_expert_to_file(
+    branch_name: str,
+    model: nn.Module,
+    samples: List[Sample],
+    preprocess: Dict,
+    uid2idx: Optional[dict],
+    base_kvoc: Optional[Dict[int, KmerVocab]],
+    out_path: str,
+):
+    stats = {
+        k: np.asarray(v, dtype=np.float32)
+        for k, v in (preprocess.get('stats', {}) or {}).items()
+    }
+    active_kvoc = None
+    if branch_name == 'kmer':
+        active_kvoc = _active_kmer_vocabs_for_final(base_kvoc, preprocess)
+
+    n_example = max(1, min(int(DEPLOY_TRACE_BATCH_SIZE), len(samples)))
+    ds = build_branch_dataset(
+        branch_name,
+        samples[:n_example],
+        stats=stats,
+        uid2idx=uid2idx,
+        kmer_vocabs=active_kvoc,
+    )
+    dl = DataLoader(ds, batch_size=n_example, shuffle=False, num_workers=0)
+    batch = next(iter(dl))
+    x = _deploy_prepare_input(branch_name, batch, CONFIG['DEVICE'])
+
+    model.eval()
+    trace_model = _deploy_trace_model(branch_name, model)
+    trace_model.eval()
+    with torch.no_grad():
+        traced = torch.jit.trace(
+            trace_model,
+            (x,),
+            strict=False,
+            check_trace=False,
+        )
+        traced.eval()
+        torch.jit.save(traced, out_path)
+
+
+def export_deploy_bundle_from_final_checkpoint(
+    final_pth_path: str,
+    reference_samples: List[Sample],
+    reference_csv: str,
+    deploy_bundle_path: str,
+) -> str:
+
+
+
+
+
+    if not os.path.isfile(final_pth_path):
+        raise FileNotFoundError(final_pth_path)
+    if not reference_samples:
+        raise RuntimeError('reference_samples 为空')
+
+    ckpt = safe_torch_load(final_pth_path, map_location='cpu')
+    required = {
+        'expert_order', 'modality_order', 'expert_state_dicts',
+        'expert_preprocess', 'kmer_vocab', 'fusion', 'config',
+    }
+    missing_keys = sorted(required - set(ckpt.keys()))
+    if missing_keys:
+        raise RuntimeError(f'FINAL.pth 缺少部署字段: {missing_keys}')
+    if list(ckpt['expert_order']) != list(FINAL_EXPERTS):
+        raise RuntimeError(
+            f"expert order mismatch: ckpt={ckpt['expert_order']} runtime={FINAL_EXPERTS}"
+        )
+    if list(ckpt['modality_order']) != list(FUSED_MODALITIES):
+        raise RuntimeError(
+            f"modality order mismatch: ckpt={ckpt['modality_order']} runtime={FUSED_MODALITIES}"
         )
 
-        df_scores_stack = make_scores(
-            uids_te,
-            y_test,
-            test_prob_stack,
-            thr=CONFIG['METRIC_THRESHOLD']
-        ).assign(method='stack')
-        df_scores_stack.to_csv(
-            os.path.join(repeat_out_dir, f'test_scores_rep{rep+1}_stack.csv'),
-            index=False
-        )
+    ref = _reference_table_for_deploy(reference_csv, reference_samples)
+    base_kvoc = _restore_kmer_vocabs_from_checkpoint(ckpt['kmer_vocab'])
+    uid2idx = build_uid2idx(CONFIG['ESM_H5'])
 
-        curves_rep = {m: (y_test, p_te) for m, (_, p_te) in method_probs.items()}
-        plot_roc_multi(
-            os.path.join(repeat_out_dir, f'roc_rep{rep+1}.svg'),
-            curves_rep,
-            title=f'ROC curves (Repeat {rep+1})'
-        )
 
-        for m, (p_oof, p_te) in method_probs.items():
-            auc_oof = roc_auc_score(y_train, p_oof) if SKLEARN_OK and len(np.unique(y_train))>1 else 0.0
-            auc_te  = roc_auc_score(y_test,  p_te)  if SKLEARN_OK and len(np.unique(y_test))>1 else 0.0
-            rows_metrics.append({'repeat': rep+1, 'set': 'oof',  'method': m, 'auc': auc_oof})
-            rows_metrics.append({'repeat': rep+1, 'set': 'test', 'method': m, 'auc': auc_te})
+    _STRUCTURE_STORES.clear()
+    prepare_structure_store(reference_samples, source='main', pdb_dir=CONFIG['PDB_DIR'])
 
-        if rep == CONFIG['N_REPEATS'] - 1:
-            last_pred_cache = {
-                'branches': branch_order,
-                'preds_train': {m: p[0] for m, p in method_probs.items()},
-                'preds_test':  {m: p[1] for m, p in method_probs.items()},
-                'w_best': w_best.tolist(),
-                'meta_state_dict': meta_state,
+    tmp_bundle = deploy_bundle_path + '.tmp'
+    if os.path.exists(tmp_bundle):
+        os.remove(tmp_bundle)
+    os.makedirs(os.path.dirname(os.path.abspath(deploy_bundle_path)), exist_ok=True)
+
+    verification = []
+    scripted_raw = {}
+    scripted_aligned = {}
+
+    try:
+        with tempfile.TemporaryDirectory(prefix='deeppalm_deploy_') as td:
+            expert_files = {}
+
+            for branch in FINAL_EXPERTS:
+                print(f'\n[DEPLOY] tracing expert: {branch}')
+                model = build_branch_model(
+                    branch,
+                    kmer_vocabs=base_kvoc if branch == 'kmer' else None,
+                )
+                state = ckpt['expert_state_dicts'][branch]
+                incompatible = model.load_state_dict(state, strict=True)
+                if incompatible.missing_keys or incompatible.unexpected_keys:
+                    raise RuntimeError(
+                        f'{branch}: state_dict mismatch: {incompatible}'
+                    )
+                model.eval()
+
+                preprocess = ckpt['expert_preprocess'][branch]
+                cache_ts_path, _ = _deploy_cache_paths(branch)
+
+                if _deploy_cache_valid(
+                    branch, final_pth_path, reference_csv
+                ):
+                    ts_path = cache_ts_path
+                    print(f'[DEPLOY RESUME] HIT {branch}; skip tracing -> {ts_path}')
+                else:
+                    ts_path = cache_ts_path
+                    tmp_ts = ts_path + '.tmp'
+                    if os.path.exists(tmp_ts):
+                        os.remove(tmp_ts)
+                    _trace_expert_to_file(
+                        branch,
+                        model,
+                        reference_samples,
+                        preprocess,
+                        uid2idx if is_esm_branch(branch) else None,
+                        base_kvoc if branch == 'kmer' else None,
+                        tmp_ts,
+                    )
+
+                    probe = torch.jit.load(tmp_ts, map_location=CONFIG['DEVICE'])
+                    del probe
+                    os.replace(tmp_ts, ts_path)
+
+                expert_files[branch] = ts_path
+
+
+                scripted = torch.jit.load(ts_path, map_location=CONFIG['DEVICE'])
+                raw = _predict_script_module(
+                    scripted,
+                    branch,
+                    reference_samples,
+                    preprocess,
+                    uid2idx if is_esm_branch(branch) else None,
+                    base_kvoc if branch == 'kmer' else None,
+                )
+                align = preprocess.get('score_alignment', {'center': 0.0, 'scale': 1.0})
+                aligned = apply_score_alignment(raw, align)
+                scripted_raw[branch] = raw
+                scripted_aligned[branch] = aligned
+
+                ref_col = f'expert_{branch}'
+                if ref_col not in ref.columns:
+                    raise RuntimeError(f'reference CSV 缺少列: {ref_col}')
+                verification.append(
+                    _assert_deploy_close(
+                        f'expert_{branch}',
+                        aligned,
+                        ref[ref_col].to_numpy(dtype=float),
+                    )
+                )
+                _mark_deploy_cache_done(
+                    branch, final_pth_path, reference_csv
+                )
+
+                del scripted
+                del model
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+
+            expert_mat = np.stack(
+                [scripted_aligned[b] for b in FINAL_EXPERTS], axis=1
+            ).astype(np.float32)
+            modality_mat = apply_saved_first_stage(
+                expert_mat,
+                ckpt['fusion']['params'],
+            )
+            final_prob = apply_saved_fusion(
+                expert_mat,
+                ckpt['fusion']['method'],
+                ckpt['fusion']['params'],
+            ).astype(np.float32)
+
+            for j, modality in enumerate(FUSED_MODALITIES):
+                ref_col = f'modality_{modality}'
+                if ref_col in ref.columns:
+                    verification.append(
+                        _assert_deploy_close(
+                            f'modality_{modality}',
+                            modality_mat[:, j],
+                            ref[ref_col].to_numpy(dtype=float),
+                        )
+                    )
+
+            verification.append(
+                _assert_deploy_close(
+                    'prob_selected_final',
+                    final_prob,
+                    ref['prob_selected_final'].to_numpy(dtype=float),
+                )
+            )
+
+
+            expected_final = ref['prob_selected_final'].to_numpy(dtype=float)
+            threshold_checks = {}
+            for thr in DEPLOY_VERIFY_THRESHOLDS:
+                old_pred = expected_final >= float(thr)
+                new_pred = final_prob >= float(thr)
+                mismatch = int(np.sum(old_pred != new_pred))
+                threshold_checks[str(thr)] = {
+                    'threshold': float(thr),
+                    'mismatch_count': mismatch,
+                    'match_fraction': float(np.mean(old_pred == new_pred)),
+                }
+                print(
+                    f'[DEPLOY VERIFY] threshold={thr}: class mismatch={mismatch}/{len(final_prob)}'
+                )
+                if mismatch != 0:
+                    raise RuntimeError(
+                        f'deploy classification mismatch at threshold={thr}: {mismatch}'
+                    )
+
+
+            path_keys = {
+                'CSV_PATH', 'ESM_H5', 'PDB_DIR', 'AAINDEX1_PATH', 'AAINDEX_PCA_PATH',
+                'OUT_DIR', 'MODEL_DIR', 'CACHE_DIR', 'STRUCTURE_CACHE_DIR', 'FINAL_MODEL_PATH',
+            }
+            deploy_config = {
+                k: copy.deepcopy(v)
+                for k, v in ckpt.get('config', {}).items()
+                if k not in path_keys
+            }
+            metadata = {
+                'format': 'DeepPalmV14DeployBundle',
+                'format_version': 1,
+                'model_name': ckpt.get('model_name', 'DeepPalm V14 FINAL'),
+                'description': ckpt.get('description'),
+                'expert_order': list(FINAL_EXPERTS),
+                'modality_order': list(FUSED_MODALITIES),
+                'expert_preprocess': copy.deepcopy(ckpt['expert_preprocess']),
+                'kmer_vocab': copy.deepcopy(ckpt['kmer_vocab']),
+                'fusion': copy.deepcopy(ckpt['fusion']),
+                'final_epochs': copy.deepcopy(ckpt.get('final_epochs', {})),
+                'config': deploy_config,
+                'deployment_test_metrics': copy.deepcopy(ckpt.get('deployment_test_metrics')),
+                'source_final_pth_sha256': _deploy_sha256_file(final_pth_path),
+                'reference_prediction_sha256': _deploy_sha256_file(reference_csv),
+                'verification': verification,
+                'threshold_checks': threshold_checks,
             }
 
+            meta_path = os.path.join(td, 'metadata.pt')
+            torch.save(metadata, meta_path)
+
+            ref_npz = os.path.join(td, 'reference_outputs.npz')
+            np.savez_compressed(
+                ref_npz,
+                uids=np.asarray([s.uid for s in reference_samples], dtype=object),
+                final_prob=final_prob.astype(np.float32),
+                expert_mat=expert_mat.astype(np.float32),
+                modality_mat=modality_mat.astype(np.float32),
+            )
+
+            manifest = {
+                'format': 'DeepPalmV14DeployBundle',
+                'format_version': 1,
+                'created_by': os.path.basename(__file__),
+                'source_final_pth': os.path.abspath(final_pth_path),
+                'source_final_pth_sha256': metadata['source_final_pth_sha256'],
+                'reference_predictions': os.path.abspath(reference_csv),
+                'reference_prediction_sha256': metadata['reference_prediction_sha256'],
+                'expert_order': list(FINAL_EXPERTS),
+                'modality_order': list(FUSED_MODALITIES),
+                'fusion_method': ckpt['fusion']['method'],
+                'verification_passed': True,
+                'max_abs_tolerance': float(DEPLOY_VERIFY_MAX_ABS),
+                'mean_abs_tolerance': float(DEPLOY_VERIFY_MEAN_ABS),
+                'threshold_checks': threshold_checks,
+                'files': {},
+            }
+
+            files_to_pack = {
+                'metadata.pt': meta_path,
+                'reference/reference_outputs.npz': ref_npz,
+            }
+            for branch, ts_path in expert_files.items():
+                files_to_pack[f'experts/{branch}.ts'] = ts_path
+
+            for arcname, fpath in files_to_pack.items():
+                manifest['files'][arcname] = {
+                    'size_bytes': int(os.path.getsize(fpath)),
+                    'sha256': _deploy_sha256_file(fpath),
+                }
+
+            manifest_path = os.path.join(td, 'manifest.json')
+            with open(manifest_path, 'w', encoding='utf-8') as f:
+                json.dump(manifest, f, indent=2, ensure_ascii=False, default=str)
+
+            with zipfile.ZipFile(tmp_bundle, 'w', compression=zipfile.ZIP_STORED) as zf:
+                zf.write(manifest_path, 'manifest.json')
+                for arcname, fpath in files_to_pack.items():
+                    zf.write(fpath, arcname)
+
+        os.replace(tmp_bundle, deploy_bundle_path)
 
 
-    repeat_out_dir = os.path.join(CONFIG['OUT_DIR'], 'repeat-result')
-    os.makedirs(repeat_out_dir, exist_ok=True)
+        with zipfile.ZipFile(deploy_bundle_path, 'r') as zf:
+            names = set(zf.namelist())
+            must = {'manifest.json', 'metadata.pt', 'reference/reference_outputs.npz'} | {
+                f'experts/{b}.ts' for b in FINAL_EXPERTS
+            }
+            missing = must - names
+            if missing:
+                raise RuntimeError(f'deploy bundle 打包不完整: {sorted(missing)}')
 
-    metrics_df = pd.DataFrame(rows_metrics)
-    metrics_df.to_csv(
-        os.path.join(repeat_out_dir, 'metrics_by_repeat.csv'),
-        index=False
+        print('\n' + '=' * 86)
+        print('[DEPLOY EXPORT] PASS')
+        print('[DEPLOY EXPORT] 不重新训练；FINAL.pth 未被修改。')
+        print('[DEPLOY EXPORT] bundle ->', deploy_bundle_path)
+        print('[DEPLOY EXPORT] sha256 ->', _deploy_sha256_file(deploy_bundle_path))
+        print('=' * 86)
+        return deploy_bundle_path
+
+    except Exception:
+        if os.path.exists(tmp_bundle):
+            os.remove(tmp_bundle)
+        if os.path.exists(deploy_bundle_path):
+
+            try:
+                os.remove(deploy_bundle_path)
+            except Exception:
+                pass
+        raise
+
+
+def _configure_checkpoint_runtime(ckpt: Dict):
+
+    current_paths = {
+        'CSV_PATH': CONFIG['CSV_PATH'],
+        'ESM_H5': CONFIG['ESM_H5'],
+        'PDB_DIR': CONFIG['PDB_DIR'],
+        'AAINDEX1_PATH': CONFIG['AAINDEX1_PATH'],
+        'AAINDEX_PCA_PATH': CONFIG['AAINDEX_PCA_PATH'],
+        'OUT_DIR': CONFIG['OUT_DIR'],
+        'MODEL_DIR': CONFIG['MODEL_DIR'],
+        'CACHE_DIR': CONFIG['CACHE_DIR'],
+        'STRUCTURE_CACHE_DIR': CONFIG['STRUCTURE_CACHE_DIR'],
+        'FINAL_MODEL_PATH': CONFIG['FINAL_MODEL_PATH'],
+    }
+    CONFIG.update(copy.deepcopy(ckpt.get('config', {})))
+    CONFIG.update(current_paths)
+    CONFIG['DEVICE'] = 'cuda' if torch.cuda.is_available() else 'cpu'
+    CONFIG['AMP'] = False
+    CONFIG['NUM_WORKERS_ESM'] = 0
+    CONFIG['NUM_WORKERS_OTHER'] = 0
+    CONFIG['PIN_MEMORY'] = bool(torch.cuda.is_available())
+
+    global AAINDEX1_PATH, PHYSICO_CHEMICAL_FEATURES, SEQ_FEAT_DIM, _PHYSCHEM_PCA_LOOKUP
+    AAINDEX1_PATH = CONFIG['AAINDEX1_PATH']
+    PHYSICO_CHEMICAL_FEATURES = build_physico_chemical_features(AAINDEX1_PATH)
+    SEQ_FEAT_DIM = len(AAINDEX_IDS)
+    _PHYSCHEM_PCA_LOOKUP = None
+
+
+def export_existing_main():
+
+
+
+
+    print('=' * 86)
+    print('DeepPalm V14 — EXPORT EXISTING FINAL.pth ONLY')
+    print('NO TRAINING / NO PARAMETER UPDATE')
+    print('=' * 86)
+
+    if not os.path.isfile(EXISTING_FINAL_MODEL_PATH):
+        raise FileNotFoundError(EXISTING_FINAL_MODEL_PATH)
+    if not os.path.isfile(EXISTING_REFERENCE_PREDICTIONS):
+        raise FileNotFoundError(EXISTING_REFERENCE_PREDICTIONS)
+
+    ckpt = safe_torch_load(EXISTING_FINAL_MODEL_PATH, map_location='cpu')
+    _configure_checkpoint_runtime(ckpt)
+
+    print('[EXPORT ONLY] model     =', EXISTING_FINAL_MODEL_PATH)
+    print('[EXPORT ONLY] reference =', EXISTING_REFERENCE_PREDICTIONS)
+    print('[EXPORT ONLY] output    =', DEPLOY_BUNDLE_PATH)
+    print('[EXPORT ONLY] device    =', CONFIG['DEVICE'])
+
+    samples = summarize_and_dedup(load_csv(CONFIG['CSV_PATH']))
+    train_all, test_samples = split_train_test(
+        samples,
+        float(CONFIG['TEST_RATIO']),
+        int(CONFIG['SPLIT_SEED']),
+    )
+    del train_all
+
+    _STRUCTURE_STORES.clear()
+    prepare_structure_store(samples, source='main', pdb_dir=CONFIG['PDB_DIR'])
+    uidmap = build_uid2idx(CONFIG['ESM_H5'])
+    missing = [s.uid for s in test_samples if s.uid not in uidmap]
+    if missing:
+        raise RuntimeError(
+            f'export reference test 中 {len(missing)} 个 UID 缺失 ESM H5: {missing[:20]}'
+        )
+
+    export_deploy_bundle_from_final_checkpoint(
+        final_pth_path=EXISTING_FINAL_MODEL_PATH,
+        reference_samples=test_samples,
+        reference_csv=EXISTING_REFERENCE_PREDICTIONS,
+        deploy_bundle_path=DEPLOY_BUNDLE_PATH,
     )
 
-    plot_auc_errorbars_by_method(
-        os.path.join(repeat_out_dir, 'auc_errorbars_test.svg'),
-        metrics_df,
-        CONFIG['N_REPEATS']
+
+def auto_resume_main():
+
+
+
+
+
+
+
+    final_pth = CONFIG['FINAL_MODEL_PATH']
+    reference_csv = os.path.join(
+        CONFIG['OUT_DIR'], 'FINA', 'single_model_test_predictions_FINAL.csv'
     )
 
-                                  
-    print("\n==> 训练 FINAL 分支 (使用 train_all)...")
-    ckpts: Dict[str, Dict] = {}
-    for b in enabled_branches:
-        if b == 'kmer':
-            ckpts[b] = train_branch_full_on_all('kmer', train_all, kmer_vocabs=kvoc)
-        else:
-            ckpts[b] = train_branch_full_on_all(b, train_all)
+    if os.path.isfile(final_pth):
+        if not os.path.isfile(reference_csv):
+            raise FileNotFoundError(
+                '[AUTO RESUME] 检测到 FINAL.pth 已存在，为防止误重训，程序不会进入训练。\n'
+                '但缺少部署一致性验证所需的 reference predictions：\n'
+                f'{reference_csv}\n'
+                '请先修正 OUT_DIR / reference 路径后重新运行。'
+            )
+        print('=' * 86)
+        print('[AUTO RESUME] FINAL.pth 已存在；跳过全部训练，直接继续 DEPLOY 导出。')
+        print('[AUTO RESUME] model     =', final_pth)
+        print('[AUTO RESUME] reference =', reference_csv)
+        print('[AUTO RESUME] deploy    =', DEPLOY_BUNDLE_PATH)
+        print('=' * 86)
 
-    preds_train = last_pred_cache['preds_train']
-    preds_test  = last_pred_cache['preds_test']
-    w_best      = np.array(last_pred_cache['w_best'], dtype=np.float32)
-    meta_state_final = last_pred_cache['meta_state_dict']
+        ckpt = safe_torch_load(final_pth, map_location='cpu')
+        _configure_checkpoint_runtime(ckpt)
 
-                                                                       
-    final_oof_prob  = preds_train['stack']
-    final_test_prob = preds_test['stack']
+        samples = summarize_and_dedup(load_csv(CONFIG['CSV_PATH']))
+        train_all, test_samples = split_train_test(
+            samples,
+            float(CONFIG['TEST_RATIO']),
+            int(CONFIG['SPLIT_SEED']),
+        )
+        del train_all
+
+        _STRUCTURE_STORES.clear()
+        prepare_structure_store(
+            samples, source='main', pdb_dir=CONFIG['PDB_DIR']
+        )
+        uidmap = build_uid2idx(CONFIG['ESM_H5'])
+        missing = [s.uid for s in test_samples if s.uid not in uidmap]
+        if missing:
+            raise RuntimeError(
+                f'auto-resume reference test 中 {len(missing)} 个 UID 缺失 ESM H5: '
+                f'{missing[:20]}'
+            )
+
+        export_deploy_bundle_from_final_checkpoint(
+            final_pth_path=final_pth,
+            reference_samples=test_samples,
+            reference_csv=reference_csv,
+            deploy_bundle_path=DEPLOY_BUNDLE_PATH,
+        )
+        return
+
+    print('[AUTO RESUME] 未发现完整 FINAL checkpoint + reference predictions；进入训练流程。')
+    train_main()
+
+def train_main():
+    print_path_config()
+    print('==> DeepPalm V14 TRAIN + AUTO-FUSION reproducible pipeline')
+    print('    base experts =', FINAL_EXPERTS)
+    print('    fused modalities =', FUSED_MODALITIES)
+    print('    fusion candidates =', CONFIG['FUSION_CANDIDATES'])
+    print('    selection = grouped training OOF only; test labels never select')
+    print('    CV      =', CONFIG['N_REPEATS'], 'x', CONFIG['N_FOLDS'])
+    print('    mining  = none (random fixed-ratio negatives only)')
+    print('    deploy  = one final .pth containing 7 full-train experts + fusion')
+    write_reproducibility_manifest()
+
+    samples = summarize_and_dedup(load_csv(CONFIG['CSV_PATH']))
+    train_all, test_samples = split_train_test(
+        samples, CONFIG['TEST_RATIO'], CONFIG['SPLIT_SEED']
+    )
+    train_groups = np.asarray([_base_uid(s.uid) for s in train_all], dtype=object)
+    test_groups = np.asarray([_base_uid(s.uid) for s in test_samples], dtype=object)
+    if set(train_groups.tolist()) & set(test_groups.tolist()):
+        raise RuntimeError('[FATAL] train/test protein overlap detected')
+
+    y_train = np.asarray([s.label for s in train_all], dtype=int)
+    y_test = np.asarray([s.label for s in test_samples], dtype=int)
+    uids_tr = [s.uid for s in train_all]
+    uids_te = [s.uid for s in test_samples]
+    print(f'[Split] train={len(train_all)} test={len(test_samples)} protein-overlap=0')
+
+
+    prepare_structure_store(samples, source='main', pdb_dir=CONFIG['PDB_DIR'])
+    store = get_esm_ram_store(CONFIG['ESM_H5'])
+    uidmap = store['uid2idx'] if store is not None else build_uid2idx(CONFIG['ESM_H5'])
+    missing = [s.uid for s in samples if s.uid not in uidmap]
+    if missing:
+        raise RuntimeError(f'{len(missing)} CSV IDs missing in main H5: {missing[:20]}')
+
+    kvoc = {}
+    for k in CONFIG['KMERS']:
+        voc = KmerVocab(k, max_size=None)
+        for s0 in train_all:
+            voc.add_seq(s0.seq)
+        mc = CONFIG.get('KMER_MIN_COUNT', {})
+        min_count = int(mc.get(k, mc.get(str(k), 1))) if isinstance(mc, dict) else int(mc)
+        voc.finalize(min_count=min_count)
+        kvoc[k] = voc
+        print(f'[Kmer] k={k} vocab={voc.size} min_count={min_count}')
 
 
 
-    FINA_DIR = os.path.join(CONFIG['OUT_DIR'], 'FINA')
-    os.makedirs(FINA_DIR, exist_ok=True)
 
-              
-    tr_aug_tmp = train_all
-    if CONFIG.get('AUG_PER_SAMPLE', 0) and BIOPY_OK:
-        tr_aug_tmp = augment_samples_for_physchem(
+    repeat_results = []
+    repeat_folds = []
+    global CURRENT_REPEAT
+    for rep0 in range(int(CONFIG['N_REPEATS'])):
+        CURRENT_REPEAT = rep0 + 1
+        folds = build_folds(
             train_all,
-            per_sample=CONFIG['AUG_PER_SAMPLE'],
-            max_muts=CONFIG['AUG_MAX_MUTS']
+            int(CONFIG['N_FOLDS']),
+            cv_seed=int(CONFIG['CV_SEED']) + rep0,
         )
-    pc_mean, pc_std = physchem_stats(tr_aug_tmp)
-    stats_pc = {'pc_mean': pc_mean, 'pc_std': pc_std}
-
-    stats_esm = {}
-    if 'esm' in enabled_branches:
-        uid2idx_final = build_uid2idx(CONFIG['ESM_H5'])
-        esm_mean, esm_std = esm_channel_stats(CONFIG['ESM_H5'], train_all, uid2idx_final)
-        stats_esm = {'esm_mean': esm_mean, 'esm_std': esm_std}
-
-                                        
-    kw = loader_kwargs()
-    dl_tr_by_branch: Dict[str, DataLoader] = {}
-    dl_te_by_branch: Dict[str, DataLoader] = {}
-
-    if 'physchem' in enabled_branches:
-                                                       
-        ds_tr = PalmDataset(train_all, 'physchem',
-                            norm_stats=stats_pc,
-                            pdb_dir=CONFIG['PDB_DIR'])
-        ds_te = PalmDataset(test_samples, 'physchem',
-                            norm_stats=stats_pc,
-                            pdb_dir=CONFIG['PDB_DIR'])
-        dl_tr_by_branch['physchem'] = DataLoader(
-            ds_tr, batch_size=CONFIG['BATCH_SIZE'], **{**kw, 'shuffle': False}
+        repeat_folds.append(folds)
+        save_split_manifest(
+            os.path.join(CONFIG['OUT_DIR'], f'split_manifest_rep{CURRENT_REPEAT}.csv'),
+            samples, train_all, test_samples, folds=folds,
         )
-        dl_te_by_branch['physchem'] = DataLoader(
-            ds_te, batch_size=CONFIG['BATCH_SIZE'], **{**kw, 'shuffle': False}
-        )
-
-    if 'esm' in enabled_branches:
-        ds_tr = PalmDataset(train_all, 'esm', esm_h5=CONFIG['ESM_H5'],
-                            norm_stats=stats_esm, uid2idx=uid2idx_final)
-        ds_te = PalmDataset(test_samples, 'esm', esm_h5=CONFIG['ESM_H5'],
-                            norm_stats=stats_esm, uid2idx=uid2idx_final)
-        dl_tr_by_branch['esm'] = DataLoader(
-            ds_tr, batch_size=CONFIG['BATCH_SIZE'], **{**kw, 'shuffle': False}
-        )
-        dl_te_by_branch['esm'] = DataLoader(
-            ds_te, batch_size=CONFIG['BATCH_SIZE'], **{**kw, 'shuffle': False}
-        )
-
-    if 'kmer' in enabled_branches:
-        ds_tr = PalmDataset(train_all, 'kmer', kmer_vocabs=kvoc)
-        ds_te = PalmDataset(test_samples, 'kmer', kmer_vocabs=kvoc)
-        dl_tr_by_branch['kmer'] = DataLoader(
-            ds_tr, batch_size=CONFIG['BATCH_SIZE'], **{**kw, 'shuffle': False}
-        )
-        dl_te_by_branch['kmer'] = DataLoader(
-            ds_te, batch_size=CONFIG['BATCH_SIZE'], **{**kw, 'shuffle': False}
-        )
-
-    if 'esmfold' in enabled_branches:
-                      
-        ds_tr = PalmDataset(train_all, 'esmfold', pdb_dir=CONFIG['PDB_DIR'])
-        ds_te = PalmDataset(test_samples, 'esmfold', pdb_dir=CONFIG['PDB_DIR'])
-        dl_tr_by_branch['esmfold'] = DataLoader(
-            ds_tr, batch_size=CONFIG['BATCH_SIZE'], **{**kw, 'shuffle': False}
-        )
-        dl_te_by_branch['esmfold'] = DataLoader(
-            ds_te, batch_size=CONFIG['BATCH_SIZE'], **{**kw, 'shuffle': False}
-        )
+        rr = {}
+        print(f'\n========== Repeat {CURRENT_REPEAT}/{CONFIG["N_REPEATS"]} ==========')
+        for branch in FINAL_EXPERTS:
+            print(f'\n[Train] {branch}')
+            rr[branch] = train_one_branch(
+                branch,
+                train_all,
+                test_samples,
+                folds,
+                kmer_vocabs=kvoc if branch == 'kmer' else None,
+            )
+        repeat_results.append(rr)
 
 
-
-                                                 
-    device = CONFIG['DEVICE']
-
-    def _infer_branch(dl, model, is_dict_input=False):
-        preds = []
-        with torch.no_grad():
-            for batch in dl:
-                if is_dict_input:
-                    xb = {k: v.to(device, non_blocking=CONFIG['NON_BLOCKING'])
-                          for k, v in batch['x'].items()}
-                    logit = model(xb)
-                else:
-                    xb = batch['x'].to(device, non_blocking=CONFIG['NON_BLOCKING']).float()
-                    logit = model(xb)
-                preds.append(torch.sigmoid(logit).cpu().numpy().ravel())
-        return np.concatenate(preds)
-
-    preds_tr_by_branch: Dict[str, np.ndarray] = {}
-    preds_te_by_branch: Dict[str, np.ndarray] = {}
-    branch_order_final = [b for b in BRANCH_ORDER if b in enabled_branches]
-
-    for b in branch_order_final:
-        if b == 'physchem':
-            m = BranchPhyschem(
-                seq_feat_dim=SEQ_FEAT_DIM,
-                seq_hidden=128,
-            ).to(device)
-        elif b == 'esm':
-            with h5py.File(CONFIG['ESM_H5'], 'r') as f_h5:
-                D_in_fin = f_h5['window_emb'].shape[-1]
-            m = BranchESM(
-                D_in=D_in_fin, hidden=CONFIG['HIDDEN'],
-                ksize=CONFIG['VCONV_KSIZE'],
-                n_layers=CONFIG['VCONV_LAYERS'],
-                dropout=CONFIG['DROPOUT'],
-            ).to(device)
-        elif b == 'kmer':
-            vocab_sizes_fin = {k: v.size for k, v in kvoc.items()}
-            m = BranchKmer(
-                vocab_sizes_fin, embed_dim=CONFIG['KMER_EMBED'],
-                ksize=5, dropout=CONFIG['DROPOUT_KMER'],
-            ).to(device)
-        elif b == 'esmfold':
-            m = BranchESMFold(
-                in_channels=6,
-                pair_hidden=128,
-                node_hidden=256,
-                gnn_layers=2,
-            ).to(device)
-        else:
-            raise ValueError(f"未知分支: {b}")
-
-
-
-
-                        
-        m.load_state_dict(ckpts[b]['state_dict'])
-        m.eval()
-
-        preds_tr_by_branch[b] = _infer_branch(
-            dl_tr_by_branch[b], m,
-            is_dict_input=(b in ('kmer', 'esmfold', 'physchem'))
-        )
-        preds_te_by_branch[b] = _infer_branch(
-            dl_te_by_branch[b], m,
-            is_dict_input=(b in ('kmer', 'esmfold', 'physchem'))
-        )
-
-
-                                                 
-    w_best = np.array(last_pred_cache['w_best'], dtype=np.float32)
-    mat_tr = np.stack([preds_tr_by_branch[b] for b in branch_order_final], axis=1)
-    mat_te = np.stack([preds_te_by_branch[b] for b in branch_order_final], axis=1)
-
-    prob_tr_blend = mat_tr @ w_best
-    prob_te_blend = mat_te @ w_best
-
-    meta_final = nn.Linear(len(branch_order_final), 1)
-    meta_final.load_state_dict(meta_state_final)
-    with torch.no_grad():
-        prob_tr_stack = torch.sigmoid(
-            meta_final(torch.from_numpy(mat_tr.astype(np.float32)))
-        ).numpy().ravel()
-        prob_te_stack = torch.sigmoid(
-            meta_final(torch.from_numpy(mat_te.astype(np.float32)))
-        ).numpy().ravel()
-
-    final_oof_prob  = prob_tr_stack
-    final_test_prob = prob_te_stack
-    p_stack_te = prob_te_stack
-
-                          
-    methods_final = branch_order_final + ['blend', 'stack']
-    preds_final_test: Dict[str, np.ndarray] = {
-        **{b: preds_te_by_branch[b] for b in branch_order_final},
-        'blend': prob_te_blend,
-        'stack': p_stack_te,
+    raw_oof = {
+        b: np.mean(np.stack([rr[b].oof_prob for rr in repeat_results]), axis=0).astype(np.float32)
+        for b in FINAL_EXPERTS
     }
+    raw_test = {
+        b: np.mean(np.stack([rr[b].test_prob for rr in repeat_results]), axis=0).astype(np.float32)
+        for b in FINAL_EXPERTS
+    }
+    aligned_oof = {
+        b: np.mean(np.stack([
+            rr[b].aligned_oof_prob if rr[b].aligned_oof_prob is not None else rr[b].oof_prob
+            for rr in repeat_results
+        ]), axis=0).astype(np.float32)
+        for b in FINAL_EXPERTS
+    }
+    aligned_test = {
+        b: np.mean(np.stack([
+            rr[b].aligned_test_prob if rr[b].aligned_test_prob is not None else rr[b].test_prob
+            for rr in repeat_results
+        ]), axis=0).astype(np.float32)
+        for b in FINAL_EXPERTS
+    }
+    expert_oof = aligned_oof if CONFIG.get('USE_ALIGNED_FOR_FUSION', True) else raw_oof
+    expert_test = aligned_test if CONFIG.get('USE_ALIGNED_FOR_FUSION', True) else raw_test
 
-    metrics_final = {m: calc_metrics(y_test, preds_final_test[m])
-                     for m in methods_final}
 
-    plot_metrics_bars_by_method(
-        os.path.join(FINA_DIR, 'metrics_bar_FINAL_test.svg'),
-        metrics_final,
-        methods_final,
-        title='FINAL model metrics on test'
+
+
+
+    expert_oof_mat = np.stack([expert_oof[b] for b in FINAL_EXPERTS], axis=1)
+    expert_test_mat = np.stack([expert_test[b] for b in FINAL_EXPERTS], axis=1)
+    shared_meta_seed = int(CONFIG['META_SHARED_SEED'])
+    fusion_selection = fit_and_select_fusion(
+        expert_oof_mat,
+        y_train,
+        train_groups,
+        expert_test_mat,
+        seed=shared_meta_seed,
+    )
+    selected_fusion_method = fusion_selection['selected_method']
+    final_meta = fusion_selection['selected']
+    final_oof = final_meta['oof_prob']
+    final_test = final_meta['test_prob']
+    modality_oof_mat = fusion_selection['modality_oof']
+    modality_test_mat = fusion_selection['modality_test']
+
+    FINA = os.path.join(CONFIG['OUT_DIR'], 'FINA')
+    os.makedirs(FINA, exist_ok=True)
+
+    save_meta_fold_manifest(
+        os.path.join(FINA, 'meta_fold_manifest_FINAL.csv'),
+        uids_tr, train_groups, y_train, shared_meta_seed,
     )
 
-    curves_final = {m: (y_test, preds_final_test[m]) for m in methods_final}
-    plot_roc_multi(
-        os.path.join(FINA_DIR, 'roc_FINAL_test.svg'),
-        curves_final,
-        title='FINAL model ROC (test)'
+
+    branch_rows = []
+    for b in FINAL_EXPERTS:
+        macro, sd = aggregate_macro_fold_auc(repeat_results, b)
+        branch_rows.append({
+            'branch': b,
+            'macro_fold_auc': float(macro),
+            'fold_auc_sd': float(sd),
+            'raw_oof_auc': float(roc_auc_score(y_train, raw_oof[b])),
+            'aligned_oof_auc': float(roc_auc_score(y_train, aligned_oof[b])),
+            'raw_test_auc': float(roc_auc_score(y_test, raw_test[b])),
+            'aligned_test_auc': float(roc_auc_score(y_test, aligned_test[b])),
+        })
+    pd.DataFrame(branch_rows).to_csv(
+        os.path.join(FINA, 'branch_metrics_FINAL.csv'), index=False
     )
 
-    df_train_final = pd.DataFrame({
+
+    fused_branch_rows = []
+    for j, modality in enumerate(FUSED_MODALITIES):
+        fused_branch_rows.append({
+            'modality': modality,
+            'oof_auc': float(roc_auc_score(y_train, modality_oof_mat[:, j])),
+            'oof_auprc': float(average_precision_score(y_train, modality_oof_mat[:, j])),
+            'test_auc': float(roc_auc_score(y_test, modality_test_mat[:, j])),
+            'test_auprc': float(average_precision_score(y_test, modality_test_mat[:, j])),
+        })
+    pd.DataFrame(fused_branch_rows).to_csv(
+        os.path.join(FINA, 'fused_modality_metrics_FINAL.csv'), index=False
+    )
+
+
+    df_oof = pd.DataFrame({
         'uniprotid': uids_tr,
-        'label': y_train.astype(int),
+        'base_uniprot': train_groups,
+        'label': y_train,
     })
-
-               
-    for b in branch_order_final:
-        df_train_final[f'prob_{b}'] = preds_tr_by_branch[b]
-
-                 
-    df_train_final['prob_blend'] = prob_tr_blend
-    df_train_final['prob_stack'] = prob_tr_stack
-
-    df_train_final.to_csv(
-        os.path.join(FINA_DIR, 'train_predictions_FINAL.csv'),
-        index=False
-    )
-    print(f"[Save][FINAL] 训练集各分支与融合方式预测已保存 ->",
-          os.path.join(FINA_DIR, 'train_predictions_FINAL.csv'))
-
-
-              
-              
-
-                                  
-    df_test_final = pd.DataFrame({
+    df_test = pd.DataFrame({
         'uniprotid': uids_te,
-        'label': y_test.astype(int),
-        'prob_blend': prob_te_blend
+        'base_uniprot': test_groups,
+        'label': y_test,
     })
-    df_test_final.to_csv(
-        os.path.join(FINA_DIR, 'test_predictions_FINAL.csv'),
-        index=False
+    for b in FINAL_EXPERTS:
+        df_oof[f'raw_{b}'] = raw_oof[b]
+        df_oof[f'aligned_{b}'] = aligned_oof[b]
+        df_oof[f'expert_{b}'] = expert_oof[b]
+        df_test[f'raw_{b}'] = raw_test[b]
+        df_test[f'aligned_{b}'] = aligned_test[b]
+        df_test[f'expert_{b}'] = expert_test[b]
+    for j, modality in enumerate(FUSED_MODALITIES):
+        df_oof[f'modality_{modality}'] = modality_oof_mat[:, j]
+        df_test[f'modality_{modality}'] = modality_test_mat[:, j]
+    fusion_candidate_rows = []
+    for method, result in fusion_selection['candidates'].items():
+        df_oof[f'prob_{method}'] = result['oof_prob']
+        df_test[f'prob_{method}'] = result['test_prob']
+        test_candidate_metrics = calc_metrics(y_test, result['test_prob'])
+        result['test_metrics'] = test_candidate_metrics
+        fusion_candidate_rows.append({
+            'method': method,
+            'selected_by_training_oof': method == selected_fusion_method,
+            'oof_auc': float(result['oof_metrics']['auc']),
+            'oof_auprc': float(result['oof_metrics']['auprc']),
+            'test_auc_final_report_only': float(test_candidate_metrics['auc']),
+            'test_auprc_final_report_only': float(test_candidate_metrics['auprc']),
+            'C': float(result['params']['second_stage']['C']),
+            'n_features': int(result['params']['second_stage']['n_features']),
+        })
+    df_oof['prob_selected_final'] = final_oof
+    df_test['prob_selected_final'] = final_test
+
+    df_oof.to_csv(os.path.join(FINA, 'train_OOF_predictions_FINAL.csv'), index=False)
+    df_test.to_csv(os.path.join(FINA, 'test_predictions_FULL_FINAL.csv'), index=False)
+    df_test[['uniprotid', 'label', 'prob_selected_final']].to_csv(
+        os.path.join(FINA, 'test_predictions_FINAL.csv'), index=False
+    )
+    pd.DataFrame(fusion_candidate_rows).to_csv(
+        os.path.join(FINA, 'fusion_candidates_FINAL.csv'), index=False
     )
 
-                                  
-    df_test_full = pd.DataFrame({
-        'uniprotid': uids_te,
-        'label': y_test.astype(int),
-    })
 
-                    
-    for b in branch_order_final:                                         
-        df_test_full[f'prob_{b}'] = preds_te_by_branch[b]
-
-                 
-    df_test_full['prob_blend'] = prob_te_blend
-    df_test_full['prob_stack'] = prob_te_stack
-
-    df_test_full.to_csv(
-        os.path.join(FINA_DIR, 'test_predictions_FULL_FINAL.csv'),
-        index=False
-    )
-    print(f"[Save][FINAL] 测试集各分支与融合方式预测已保存 ->",
-          os.path.join(FINA_DIR, 'test_predictions_FULL_FINAL.csv'))
-
-
-    species_stats_and_roc(
-        uids_te,
-        y_test,
-        prob_te_blend,
-        CONFIG.get('SPECIES_CSV', ''),
-        FINA_DIR,
-        min_n=CONFIG.get('SPECIES_MIN_SAMPLES', 100)
-    )
-
-
-                                                                  
-    final_rep = CONFIG.get('FINAL_REPEAT_ID', 1000)
-    fused_dir = os.path.join(CONFIG['MODEL_DIR'], f"repeat{final_rep}", "fused")
-    os.makedirs(fused_dir, exist_ok=True)
-
-    branch_models_final: Dict[str, nn.Module] = {}
-    for b in branch_order_final:
-        if b == 'physchem':
-            m = BranchPhyschem(
-                seq_feat_dim=SEQ_FEAT_DIM,
-                seq_hidden=128,
-            )
-        elif b == 'esm':
-            with h5py.File(CONFIG['ESM_H5'], 'r') as f_h5:
-                D_in_final = f_h5['window_emb'].shape[-1]
-            m = BranchESM(
-                D_in=D_in_final, hidden=CONFIG['HIDDEN'],
-                ksize=CONFIG['VCONV_KSIZE'],
-                n_layers=CONFIG['VCONV_LAYERS'],
-                dropout=CONFIG['DROPOUT'],
-            )
-        elif b == 'kmer':
-            vocab_sizes_final = {k: v.size for k, v in kvoc.items()}
-            m = BranchKmer(
-                vocab_sizes_final, embed_dim=CONFIG['KMER_EMBED'],
-                ksize=5, dropout=CONFIG['DROPOUT_KMER'],
-            )
-        elif b == 'esmfold':
-            m = BranchESMFold(
-                in_channels=6,
-                pair_hidden=128,
-                node_hidden=256,
-                gnn_layers=2,
-            )
-        else:
-            raise ValueError(f"未知分支: {b}")
-
-        m.load_state_dict(ckpts[b]['state_dict'])
-        branch_models_final[b] = m
-
-
-
-    fused_final = FourWayBlend(branch_models_final, weights=w_best)
-    fused_path_final = os.path.join(fused_dir, f"fused_rep{final_rep}_blend.pth")
-    torch.save({
-        'state_dict': fused_final.state_dict(),
-        'weights': w_best.tolist(),
-        'branches': branch_order_final,
-        'repeat': final_rep,
-        'config': CONFIG,
-        'note': f'FINAL prob-level blend of branches {branch_order_final} trained on train_all',
-    }, fused_path_final)
-    print(f"[Save][FINAL] Fused -> {fused_path_final}")
-
-                           
-    stack_final = FiveWayStack(branch_models_final, meta_state_dict=meta_state_final)
-    fused_path_final_stack = os.path.join(fused_dir, f"fused_rep{final_rep}_stack.pth")
-    torch.save({
-        'state_dict': stack_final.state_dict(),
-        'branches': branch_order_final,
-        'repeat': final_rep,
-        'config': CONFIG,
-        'note': f'FINAL prob-level stacking of branches {branch_order_final} trained on train_all',
-    }, fused_path_final_stack)
-    print(f"[Save][FINAL] Fused STACK -> {fused_path_final_stack}")
-
-                       
-    mets_oof_final = calc_metrics(y_train, final_oof_prob)
-    mets_te_final  = calc_metrics(y_test,  final_test_prob)
-    report = {
-        'config': CONFIG,
-        'final_stack_oof': {'auc': mets_oof_final['auc']},
-        'final_stack_test': {'auc': mets_te_final['auc']},
-        'blend_weight_lastrep': w_best.tolist(),
-        'branches': branch_order_final,
-        'notes': 'models/ 目录包含每个分支每折最优权重、分支整体最佳权重，每个 repeat 的融合模型，以及 “FINAL” 基于 train_all 的 N+1 模型。'
+    fusion_params = {
+        'expert_order': FINAL_EXPERTS,
+        'modality_order': FUSED_MODALITIES,
+        'first_stage_metrics': fusion_selection['first_stage_metrics'],
+        'selected_fusion_method': selected_fusion_method,
+        'shared_meta_seed': shared_meta_seed,
+        'uses_fold_score_alignment': bool(CONFIG.get('USE_ALIGNED_FOR_FUSION', True)),
+        'fusion': {
+            method: result['params']
+            for method, result in fusion_selection['candidates'].items()
+        },
+        'selection_rule': fusion_selection['selection_rule'],
+        'selection_uses_test': False,
+        'candidate_metrics': fusion_candidate_rows,
     }
-    with open(os.path.join(CONFIG['OUT_DIR'], 'report.json'), 'w') as f:
-        json.dump(report, f, indent=2)
-    
-    kmer_vocab_path = os.path.join(CONFIG['MODEL_DIR'], "kmer_vocab.json")
-    obj = {
-     "meta": {
-        "csv_path": CONFIG['CSV_PATH'],
-        "test_ratio": CONFIG['TEST_RATIO'],
-        "split_seed": CONFIG['SPLIT_SEED'],
-        "kmers": CONFIG['KMERS'],
-     },
-     "vocabs": {
-        str(k): {"k": k, "max_size": kvoc[k].max_size, "itos": kvoc[k].itos}
-        for k in sorted(kvoc.keys())
-     }
+    with open(os.path.join(FINA, 'fusion_params_FINAL.json'), 'w', encoding='utf-8') as f:
+        json.dump(fusion_params, f, indent=2, ensure_ascii=False)
+
+    save_kmer_vocab_v3(kvoc)
+
+    oof_metrics = calc_metrics(y_train, final_oof)
+    test_metrics = calc_metrics(y_test, final_test)
+    summary = {
+        'version': 'DeepPalm V14 reproducible train-and-auto-fusion',
+        'experts': FINAL_EXPERTS,
+        'base_experts': FINAL_EXPERTS,
+        'fused_modalities': FUSED_MODALITIES,
+        'final_fusion': selected_fusion_method,
+        'fusion_selection_rule': fusion_selection['selection_rule'],
+        'selection_uses_test': False,
+        'fusion_candidates': fusion_candidate_rows,
+        'n_repeats': int(CONFIG['N_REPEATS']),
+        'n_folds': int(CONFIG['N_FOLDS']),
+        'oof_metrics': oof_metrics,
+        'test_metrics': test_metrics,
+        'branch_metrics': branch_rows,
+        'fused_modality_metrics': fused_branch_rows,
+        'first_stage_metrics': fusion_selection['first_stage_metrics'],
     }
-    with open(kmer_vocab_path, "w", encoding="utf-8") as f:
-     json.dump(obj, f, ensure_ascii=False)
-    print("[Save] kmer vocab ->", kmer_vocab_path)
-
-    
-
+    with open(os.path.join(FINA, 'v14_final_summary.json'), 'w', encoding='utf-8') as f:
+        json.dump(summary, f, indent=2, ensure_ascii=False, default=str)
+    with open(os.path.join(CONFIG['OUT_DIR'], 'report.json'), 'w', encoding='utf-8') as f:
+        json.dump({'config': CONFIG, **summary}, f, indent=2, ensure_ascii=False, default=str)
 
 
-def species_roc_by_method(uids: List[str],
-                          labels: np.ndarray,
-                          probs_by_method: Dict[str, np.ndarray],
-                          species_csv: str,
-                          out_dir: str,
-                          min_n: int = 100):
-       
-                           
-       
-    if (not species_csv) or (not os.path.exists(species_csv)):
-        print("[Info] SPECIES_CSV 不存在，跳过按物种多方法 ROC。")
-        return
-    if not SKLEARN_OK:
-        print("[Info] 未安装 sklearn，跳过按物种多方法 ROC。")
-        return
 
-    sp_map = _load_species_map_for_final(species_csv)
 
-    uids = list(uids)
-    labels = np.asarray(labels).astype(int)
-    n = len(uids)
 
-             
-    for m, p in probs_by_method.items():
-        if len(p) != n:
-            raise ValueError(f"[species_roc_by_method] method={m} 的预测长度={len(p)} "
-                             f"和样本数 n={n} 不一致")
 
-                       
-    bucket_idx: Dict[str, List[int]] = {}
-    for i, uid in enumerate(uids):
-        sp = sp_map.get(uid) or sp_map.get(_base_uid(uid))
-        if sp is None:
-            continue
-        bucket_idx.setdefault(sp, []).append(i)
+    deployment_metrics = None
+    if bool(CONFIG.get('TRAIN_SINGLE_FINAL_MODEL', True)):
+        print('\n' + '=' * 82)
+        print('TRAIN ONE DEPLOYABLE DeepPalm_V14_FINAL.pth')
+        print('=' * 82)
 
-    rows = []
-    for sp, idxs in bucket_idx.items():
-        if len(idxs) <= min_n:
-            continue
+        final_epochs = choose_final_epochs(repeat_results)
+        final_expert_results = {}
 
-        y_sp = labels[idxs]
-        if len(np.unique(y_sp)) < 2:
-            continue
-
-        curves = {}
-        for m, p_all in probs_by_method.items():
-            p_sp = np.asarray(p_all)[idxs]
-                                          
-            if len(np.unique(y_sp)) < 2:
+        for branch in FINAL_EXPERTS:
+            cached_final = _try_load_final_expert_resume(
+                branch, final_epochs[branch]
+            )
+            if cached_final is not None:
+                final_expert_results[branch] = cached_final
                 continue
-            auc = roc_auc_score(y_sp, p_sp)
-            curves[m] = (y_sp, p_sp)
-            rows.append({'species': sp, 'method': m,
-                         'n': len(y_sp), 'auc': float(auc)})
 
-        if len(curves) < 2:
-            continue
+            result = train_single_final_branch(
+                branch,
+                train_all,
+                test_samples,
+                epochs=final_epochs[branch],
+                kmer_vocabs=kvoc if branch == 'kmer' else None,
+            )
+            final_expert_results[branch] = result
+            _save_final_expert_resume(
+                branch, final_epochs[branch], result
+            )
 
-        safe_sp = sp.replace('/', '_').replace(' ', '_')
-        fig_name = f"species_{safe_sp}_roc_methods_FINAL.svg"
-        plot_roc_multi(
-            os.path.join(out_dir, fig_name),
-            curves,
-            title=f"{sp} ROC by method (test)"
+        single_train_mat = np.stack([
+            final_expert_results[b]['train_prob']
+            for b in FINAL_EXPERTS
+        ], axis=1)
+        single_test_mat = np.stack([
+            final_expert_results[b]['eval_prob']
+            for b in FINAL_EXPERTS
+        ], axis=1)
+
+        single_train_modality_mat = apply_saved_first_stage(
+            single_train_mat, final_meta['params']
         )
-    if rows:
-        df = pd.DataFrame(rows)
-        df.to_csv(os.path.join(out_dir, 'species_auc_by_method_FINAL.csv'),
-                  index=False)
-        print("[Save] 物种-方法 AUC 已输出到:", out_dir)
+        single_test_modality_mat = apply_saved_first_stage(
+            single_test_mat, final_meta['params']
+        )
+        single_train_prob = apply_saved_fusion(
+            single_train_mat,
+            selected_fusion_method,
+            final_meta['params'],
+        )
+        single_test_prob = apply_saved_fusion(
+            single_test_mat,
+            selected_fusion_method,
+            final_meta['params'],
+        )
 
+        deployment_metrics = calc_metrics(y_test, single_test_prob)
+
+        df_single = pd.DataFrame({
+            'uniprotid': uids_te,
+            'base_uniprot': test_groups,
+            'label': y_test,
+        })
+        for b in FINAL_EXPERTS:
+            df_single[f'expert_{b}'] = final_expert_results[b]['eval_prob']
+        for j, modality in enumerate(FUSED_MODALITIES):
+            df_single[f'modality_{modality}'] = single_test_modality_mat[:, j]
+        df_single['prob_selected_final'] = single_test_prob
+        df_single.to_csv(
+            os.path.join(FINA, 'single_model_test_predictions_FINAL.csv'),
+            index=False,
+        )
+
+        pd.DataFrame([
+            {
+                'branch': b,
+                'final_epochs': final_epochs[b],
+                'test_auc': float(roc_auc_score(y_test, final_expert_results[b]['eval_prob'])),
+                'test_auprc': float(average_precision_score(y_test, final_expert_results[b]['eval_prob'])),
+            }
+            for b in FINAL_EXPERTS
+        ]).to_csv(
+            os.path.join(FINA, 'single_model_branch_metrics_FINAL.csv'),
+            index=False,
+        )
+
+        single_fused_rows = [
+            {
+                'modality': modality,
+                'test_auc': float(roc_auc_score(y_test, single_test_modality_mat[:, j])),
+                'test_auprc': float(average_precision_score(y_test, single_test_modality_mat[:, j])),
+            }
+            for j, modality in enumerate(FUSED_MODALITIES)
+        ]
+        pd.DataFrame(single_fused_rows).to_csv(
+            os.path.join(FINA, 'single_model_fused_modality_metrics_FINAL.csv'),
+            index=False,
+        )
+
+        single_summary = {
+            'model_file': CONFIG['FINAL_MODEL_PATH'],
+            'fusion_method': selected_fusion_method,
+            'final_epochs': final_epochs,
+            'test_metrics': deployment_metrics,
+            'cv_ensemble_reference_test_metrics': test_metrics,
+            'fused_modality_metrics': single_fused_rows,
+            'note': (
+                'The single deployable checkpoint contains seven base experts trained once on the full training split. '
+                'Their outputs are reduced to four modality-level probabilities (physchem/ESM/kmer/structure) before final fusion. '
+                'Its test metric can differ from the 3x5 CV ensemble reference.'
+            ),
+        }
+        with open(
+            os.path.join(FINA, 'single_model_summary_FINAL.json'),
+            'w', encoding='utf-8'
+        ) as f:
+            json.dump(single_summary, f, indent=2, ensure_ascii=False, default=str)
+
+        save_single_final_checkpoint(
+            final_expert_results=final_expert_results,
+            final_epochs=final_epochs,
+            kvoc=kvoc,
+            fusion_method=selected_fusion_method,
+            fusion_params=final_meta['params'],
+            cv_summary={
+                'oof_metrics': oof_metrics,
+                'cv_ensemble_test_metrics': test_metrics,
+                'branch_metrics': branch_rows,
+                'fused_modality_metrics': fused_branch_rows,
+                'first_stage_metrics': fusion_selection['first_stage_metrics'],
+                'fusion_candidates': fusion_candidate_rows,
+            },
+            deployment_metrics=deployment_metrics,
+        )
+
+
+
+
+
+
+        export_deploy_bundle_from_final_checkpoint(
+            final_pth_path=CONFIG['FINAL_MODEL_PATH'],
+            reference_samples=test_samples,
+            reference_csv=os.path.join(FINA, 'single_model_test_predictions_FINAL.csv'),
+            deploy_bundle_path=DEPLOY_BUNDLE_PATH,
+        )
+
+        print('\n[SINGLE FINAL] TEST AUC   =', deployment_metrics['auc'])
+        print('[SINGLE FINAL] TEST AUPRC =', deployment_metrics['auprc'])
+        print('[SINGLE FINAL] MODEL FILE =', CONFIG['FINAL_MODEL_PATH'])
+
+    write_result_checksums(
+        FINA,
+        selected_method=selected_fusion_method,
+        include_model=deployment_metrics is not None,
+    )
+
+    print('\n========== DeepPalm V14 FINAL ==========', flush=True)
+    for r in branch_rows:
+        print(
+            f"  - {r['branch']:20s} macro={r['macro_fold_auc']:.4f} "
+            f"alignedOOF={r['aligned_oof_auc']:.4f} test={r['aligned_test_auc']:.4f}"
+        )
+    print('[FINAL] fusion =', selected_fusion_method)
+    print('[FINAL] OOF AUC =', oof_metrics['auc'])
+    print('[FINAL] OOF AUPRC =', oof_metrics['auprc'])
+    print('[FINAL] TEST AUC =', test_metrics['auc'])
+    print('[FINAL] TEST AUPRC =', test_metrics['auprc'])
+    print('[FINAL] outputs ->', FINA)
+    if deployment_metrics is not None:
+        print('[FINAL] single deployable model ->', CONFIG['FINAL_MODEL_PATH'])
+        print('[FINAL] single-model TEST AUC ->', deployment_metrics['auc'])
 
 if __name__ == '__main__':
-    main()
+    mode = str(RUN_MODE).strip().lower()
+    if mode == 'train':
+        train_main()
+    elif mode == 'export_existing':
+        export_existing_main()
+    elif mode == 'auto_resume':
+        auto_resume_main()
+    else:
+        raise ValueError(
+            f"RUN_MODE={RUN_MODE!r} 不支持；只能是 'train'、'export_existing' 或 'auto_resume'"
+        )
