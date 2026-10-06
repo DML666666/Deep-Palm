@@ -1,6 +1,17 @@
 # Deep-Palm
 
-Deep-Palm is a multi-view deep learning framework for protein S-palmitoylation site prediction. It integrates sequence-derived features, protein-property features, protein language model embeddings, and predicted spatial-structure features.
+Deep-Palm is a multi-view deep learning framework for protein **S-palmitoylation site prediction**.
+
+The model integrates four complementary types of information:
+
+- AAindex-derived protein physicochemical properties
+- ESM-2 protein language model embeddings
+- sequence k-mer features
+- ESMFold-predicted spatial-structure features
+
+This repository provides the files required for both **model training** and **prediction using the pretrained Deep-Palm model**.
+
+---
 
 ## Repository structure
 
@@ -12,26 +23,43 @@ Deep-Palm/
 │   ├── embedding.h5
 │   ├── esmfold.pdb/
 │   ├── aaindex1.txt
-│   ├── uniprotid_species.csv
-│   ├── esm2_embedding.py
-│   └── esm2_structure.py
+│   └── AAindex_PCA.csv
+│
 ├── Using_the_Model/
 │   ├── predict.py
-│   ├── Deep-Palm.pth
-│   ├── kmer_vocab.json
+│   ├── DeepPalm_DEPLOY.dpalm
+│   ├── DeepPalm.pth
 │   ├── aaindex1.txt
+│   ├── AAindex_PCA.csv
 │   ├── esm2_embedding.py
-│   └── esm2_structure.py
+│   └── esmfold_structure.py
+│
 ├── environment.yml
-└── .gitattributes
+├── .gitattributes
+└── README.md
 ```
 
-`Deep-Palm.pth` and `kmer_vocab.json` are the pretrained Deep-Palm resources used for prediction.  
-`aaindex1.txt` is required by `predict.py` to construct protein-property features.
+### Main files
 
-## Download and environment setup
+- `Train_the_Model/train.py`: main Deep-Palm training script.
+- `Train_the_Model/input.csv`: input data used for model training.
+- `Train_the_Model/embedding.h5`: precomputed ESM-2 embedding features.
+- `Train_the_Model/esmfold.pdb/`: precomputed ESMFold structure files.
+- `aaindex1.txt`: AAindex database file used to construct physicochemical features.
+- `AAindex_PCA.csv`: PCA transformation information used by the physicochemical branch.
+- `DeepPalm.pth`: trained Deep-Palm model checkpoint.
+- `DeepPalm_DEPLOY.dpalm`: deployable Deep-Palm model bundle used by `predict.py`.
+- `esm2_embedding.py`: script for generating ESM-2 embedding features.
+- `esmfold_structure.py`: script for generating ESMFold-predicted structures.
+- `predict.py`: script for prediction using the pretrained Deep-Palm model.
 
-The repository contains large files managed through Git LFS. Install Git LFS before cloning the repository:
+---
+
+## Download
+
+Some large files in this repository are managed using **Git LFS**.
+
+Install Git LFS before cloning the repository:
 
 ```bash
 git lfs install
@@ -39,84 +67,148 @@ git clone https://github.com/DML666666/Deep-Palm.git
 cd Deep-Palm
 ```
 
-Create the conda environment using the provided environment file:
+If necessary, large files can also be retrieved manually after cloning:
 
 ```bash
-conda env create -f environment.yml
+git lfs pull
 ```
-
-Activate the environment name specified in `environment.yml` before running the scripts.
-
-## External pretrained models required for feature generation
-
-Prediction with Deep-Palm requires embedding and structure features generated from the candidate sequence windows.
-
-- **Embedding features:** generated using **ESM-2 t36 3B UR50D** (`esm2_t36_3B_UR50D.pt`). The supplied `esm2_embedding.py` script averages representations from the last four ESM-2 layers.
-- **Structure features:** generated using **ESMFold v1** through `esm.pretrained.esmfold_v1()` in `esm2_structure.py`.
-
-The ESM-2 and ESMFold weights are external pretrained model resources and are not the Deep-Palm prediction model. Ensure that they are available in your local environment before feature generation. The official ESM and ESMFold implementation is available from the [facebookresearch/esm](https://github.com/facebookresearch/esm) repository.
 
 ---
 
-## Training the model
+## Runtime environment
 
-The `Train_the_Model/` directory contains the files used for Deep-Palm model training.
+Deep-Palm was developed using a CUDA-enabled PyTorch environment.
 
-### Included training resources
+A tested runtime included:
+
+```text
+Python        3.11.11
+PyTorch       2.2.1+cu121
+CUDA          12.1
+h5py          3.15.1
+pandas        2.3.3
+numpy         1.26.4
+tqdm          4.67.1
+scikit-learn  1.6.1
+matplotlib    3.10.0
+biopython     1.83
+```
+
+The ESM package is additionally required for ESM-2 and ESMFold feature generation.
+
+Because the original runtime was assembled from an existing ESM/ESMFold environment, users may need to install the required packages manually according to their local CUDA and PyTorch configuration.
+
+---
+
+## External pretrained models
+
+Deep-Palm uses external pretrained models to generate embedding and structural features.
+
+### ESM-2
+
+ESM-2 embeddings are generated using:
+
+```text
+esm2_t36_3B_UR50D
+```
+
+The corresponding pretrained weight file is typically:
+
+```text
+esm2_t36_3B_UR50D.pt
+```
+
+The supplied `esm2_embedding.py` script uses representations from the last four ESM-2 layers.
+
+### ESMFold
+
+Predicted structural features are generated using:
+
+```python
+esm.pretrained.esmfold_v1()
+```
+
+The ESM-2 and ESMFold models are external pretrained resources and are not part of the Deep-Palm prediction model itself.
+
+The official ESM and ESMFold implementation is available from:
+
+https://github.com/facebookresearch/esm
+
+---
+
+# Training the model
+
+The `Train_the_Model/` directory contains the files required to reproduce Deep-Palm model training.
 
 ```text
 Train_the_Model/
-├── train.py                 # model training script
-├── input.csv                # training input table
-├── embedding.h5             # precomputed ESM-2 embedding features
-├── esmfold.pdb/             # precomputed ESMFold-predicted PDB structures
-├── aaindex1.txt             # AAindex resource for protein-property features
-├── uniprotid_species.csv    # auxiliary species information used in data preparation
-├── esm2_embedding.py        # embedding feature generation script
-└── esm2_structure.py        # structure feature generation script
+├── train.py
+├── input.csv
+├── embedding.h5
+├── esmfold.pdb/
+├── aaindex1.txt
+└── AAindex_PCA.csv
 ```
 
-### Reproduce model training
+The current training script uses relative paths:
 
-1. Open `Train_the_Model/train.py`.
-2. In the configuration section, set the corresponding file paths to the files provided in `Train_the_Model/`:
-   - training input table: `input.csv`
-   - ESM embedding features: `embedding.h5`
-   - predicted structures: `esmfold.pdb/`
-   - AAindex resource: `aaindex1.txt`
-3. Run the training script:
+```python
+CSV_PATH = "input.csv"
+ESM_H5 = "embedding.h5"
+PDB_DIR = "esmfold.pdb"
+AAINDEX1_PATH = "aaindex1.txt"
+AAINDEX_PCA_PATH = "AAindex_PCA.csv"
+```
+
+Therefore, training can be started directly from the `Train_the_Model` directory:
 
 ```bash
 cd Train_the_Model
 python train.py
 ```
 
-The supplied precomputed features can be used directly. To regenerate the features, configure and run `esm2_embedding.py` and `esm2_structure.py` using the same input sequences.
+The training pipeline includes repeated cross-validation, protein-level data splitting, multiple feature branches, and final multi-view fusion.
+
+The supplied precomputed ESM-2 embeddings and ESMFold structures can be used directly for model training.
 
 ---
 
-## Using the pretrained model
+# Using the pretrained model
 
-The `Using_the_Model/` directory provides the pretrained model and scripts for predicting S-palmitoylation sites in user-provided candidate sequences.
+The `Using_the_Model/` directory contains the deployable model and scripts required for Deep-Palm prediction.
 
-### Workflow overview
+The general workflow is:
 
 ```text
-Your candidate sequence windows
-        │
-        ├── esm2_embedding.py  ──>  your_embedding.h5
-        │       (ESM-2 t36 3B UR50D)
-        │
-        ├── esm2_structure.py  ──>  your_esmfold_pdb/*.pdb
-        │       (ESMFold v1)
-        │
-        └── predict.py + Deep-Palm.pth + kmer_vocab.json + aaindex1.txt
-                              ──>  Deep-Palm prediction scores
+Candidate 31-aa sequence windows
+            │
+            ├── esm2_embedding.py
+            │        ↓
+            │   embedding.h5
+            │
+            ├── esmfold_structure.py
+            │        ↓
+            │   esmfold.pdb/
+            │
+            └── predict.py
+                     +
+               DeepPalm_DEPLOY.dpalm
+                     ↓
+              prediction_results.csv
 ```
 
-### Step 1. Prepare your candidate sequence file
+---
 
-Prepare a CSV file containing two columns named `ID` and `Window`:
+## Step 1. Prepare the input file
+
+Prepare a CSV or TSV file containing at least two columns:
+
+```text
+ID
+Window
+```
+
+Example:
 
 ```csv
 ID,Window
@@ -126,129 +218,192 @@ candidate_site_002,GGGGGGGGGGGGGGGCGGGGGGGGGGGGGGG
 
 Requirements:
 
-- `ID` may be any unique identifier or placeholder for each candidate site.
-- `Window` must contain a **31-residue amino acid sequence window**.
-- The candidate cysteine must be located at the central position of the window, that is, position 16.
-- Labels, species information, and experimental annotations are not required for prediction.
-- The same `ID` values must be used consistently for embedding generation, structure generation, and prediction.
+- `ID` must uniquely identify each candidate site.
+- `Window` should contain a 31-residue amino-acid sequence.
+- The candidate cysteine must be located at the central position.
+- For a 31-residue window, the central cysteine is residue **16**.
+- The same ID must be used consistently in the input file, ESM-2 embedding file, and PDB filename.
+- Duplicate IDs are not allowed.
 
-The column name `Window` is used here because it is directly compatible with the supplied feature-generation scripts.
+For example:
 
-### Step 2. Generate ESM-2 embedding features
+```text
+candidate_site_001
+```
 
-Open `Using_the_Model/esm2_embedding.py` and set the paths in the `CONFIG` section. For example:
+must correspond to:
+
+```text
+candidate_site_001.pdb
+```
+
+in the structure directory.
+
+---
+
+## Step 2. Generate ESM-2 embeddings
+
+Open:
+
+```text
+Using_the_Model/esm2_embedding.py
+```
+
+and modify the `CONFIG` section.
+
+For example:
 
 ```python
 CONFIG = {
-    "CSV": "./candidate_sites.csv",
-    "OUT": "./features/your_embedding.h5",
+    "CSV": "/path/to/input.csv",
+    "OUT": "/path/to/embedding.h5",
 
     "ID_COL": "ID",
     "SEQ_COL": "Window",
     "COL3_COL": "",
     "COL3_PLACEHOLDER": "",
 
-    "MODEL_PATH": "path/to/esm2_t36_3B_UR50D.pt",
+    "MODEL_PATH": "/path/to/esm2_t36_3B_UR50D.pt",
     "MODEL_ID": "esm2_t36_3B_UR50D",
+
     "DEVICE": "cuda",
     "BATCH_SIZE": 8,
     "LAYERS": "last4",
     "CENTER_INDEX": 15,
+
     "STORE_FP16": True,
     "SAVE_CLS": True,
     "SAVE_MASK_STATS": True,
-    "PRINT_CONFIG": True,
-    "CSV_ENCODING": "utf-8-sig",
 }
 ```
 
-Run:
+Then run:
 
 ```bash
 cd Using_the_Model
 python esm2_embedding.py
 ```
 
-This script generates an HDF5 file containing the ESM-2 embedding features used by Deep-Palm.
+The generated HDF5 file contains the ESM-2 representations required by Deep-Palm.
 
-### Step 3. Generate ESMFold-predicted structure files
+---
 
-Open `Using_the_Model/esm2_structure.py` and set:
+## Step 3. Generate ESMFold structures
+
+Open:
+
+```text
+Using_the_Model/esmfold_structure.py
+```
+
+and set the input and output paths:
 
 ```python
-INPUT_CSV = r"./candidate_sites.csv"
-OUTPUT_DIR = r"./features/your_esmfold_pdb"
+INPUT_CSV = r"/path/to/input.csv"
+OUTPUT_DIR = r"/path/to/esmfold.pdb"
 NUM_WORKERS = 1
 ```
 
-Run:
+Then run:
 
 ```bash
-python esm2_structure.py
+python esmfold_structure.py
 ```
 
-This script uses ESMFold v1 to generate one PDB structure file for each candidate sequence window:
+The script generates one PDB file for each candidate site:
 
 ```text
-features/your_esmfold_pdb/
+esmfold.pdb/
 ├── candidate_site_001.pdb
-└── candidate_site_002.pdb
+├── candidate_site_002.pdb
+└── ...
 ```
 
-`NUM_WORKERS = 1` is recommended for typical single-GPU environments because each worker loads an ESMFold model instance.
+`NUM_WORKERS` should be adjusted according to available GPU memory. A single worker is the safest option for a typical single-GPU environment.
 
-### Step 4. Predict S-palmitoylation sites using Deep-Palm
+---
 
-Open `Using_the_Model/predict.py` and set the paths in its `CONFIG` section:
+## Step 4. Run Deep-Palm prediction
+
+Open:
+
+```text
+Using_the_Model/predict.py
+```
+
+and modify the file paths at the beginning of the script:
 
 ```python
-CONFIG = {
-    # ---- your input and output ----
-    "INPUT_CSV": "./candidate_sites.csv",
-    "OUTPUT_CSV": "./prediction_results.csv",
+MODEL_PATH = r"DeepPalm_DEPLOY.dpalm"
 
-    # ---- pretrained Deep-Palm resources ----
-    "FUSED_CKPT": "./Deep-Palm.pth",
-    "KMER_VOCAB_JSON": "./kmer_vocab.json",
-    "AAINDEX1_PATH": "./aaindex1.txt",
+INPUT_CSV = r"input.csv"
+INPUT_ESM_H5 = r"embedding.h5"
+INPUT_PDB_DIR = r"esmfold.pdb"
 
-    # ---- features generated from your candidate sequences ----
-    "ESM_H5": "./features/your_embedding.h5",
-    "PDB_DIR": "./features/your_esmfold_pdb",
+AAINDEX1_PATH = r"aaindex1.txt"
+AAINDEX_PCA_PATH = r"AAindex_PCA.csv"
 
-    # ---- runtime ----
-    "BATCH_SIZE": 64,
-    "NUM_WORKERS": 0,
-    "DEVICE": "cuda",
-    "STRICT": True,
-    "THRESHOLD": 0.5,
-}
+OUTPUT_CSV = r"prediction_results.csv"
+```
+
+The prediction script automatically uses GPU acceleration when CUDA is available:
+
+```python
+DEVICE = "cuda:0" if torch.cuda.is_available() else "cpu"
 ```
 
 Run:
 
 ```bash
+cd Using_the_Model
 python predict.py
 ```
 
-The prediction output file contains the Deep-Palm score for each candidate site:
+---
 
-```text
-ID,Window,Deep-Palm_score,prediction
+## Prediction output
+
+The prediction output contains two columns:
+
+```csv
+ID,probability
+candidate_site_001,0.9231
+candidate_site_002,0.1847
 ```
 
-- `Deep-Palm_score`: model output score for the candidate S-palmitoylation site.
-- `prediction`: binary prediction generated using the threshold specified in `predict.py`.
+where:
 
-### Important notes for prediction
+- `ID` is the identifier of the candidate site.
+- `probability` is the Deep-Palm prediction score.
 
-- Use the same candidate CSV file to generate the embedding features, generate the PDB structures, and perform prediction.
-- Do not provide full-length protein sequences to this workflow. Each row must contain a 31-residue cysteine-centered sequence window.
-- The IDs in the candidate CSV file must match the IDs stored in the generated HDF5 file and the PDB filenames.
-- `Deep-Palm.pth` is the trained Deep-Palm prediction model. `esm2_t36_3B_UR50D.pt` and ESMFold v1 are external pretrained models used only to generate input features.
+A higher probability indicates stronger model support for the candidate site being an S-palmitoylation site.
+
+---
+
+## Important notes
+
+1. The same candidate sequences and IDs must be used for ESM-2 embedding generation, ESMFold structure generation, and Deep-Palm prediction.
+
+2. The candidate sequence should be a 31-residue cysteine-centered window.
+
+3. The central residue must be cysteine.
+
+4. Input IDs must be unique.
+
+5. Each input ID must have a corresponding entry in the generated `embedding.h5`.
+
+6. Each input ID must have a corresponding PDB file in the structure directory.
+
+7. `DeepPalm_DEPLOY.dpalm` is the deployable model used by `predict.py`.
+
+8. Users do not need to retrain Deep-Palm when using the supplied pretrained model.
+
+9. ESM-2 and ESMFold are used only to generate input features and are separate from the trained Deep-Palm model.
+
+---
 
 ## Code availability
 
-The source code, pretrained Deep-Palm model, and processed files provided for model training and prediction are available at:
+The source code, pretrained model, and processed files required for model training and prediction are available in this repository:
 
 https://github.com/DML666666/Deep-Palm
