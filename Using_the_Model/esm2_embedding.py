@@ -1,5 +1,11 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
+"""
+【只 embedding 第2列版】ESM2-3B 31aa 窗口特征提取
+- 只对 CSV 第2列（序列）做 embedding
+- 第1列原样保留（写入 H5 的 uniprotid，用于样本对齐/索引）
+- 第3列原样保留（写入 H5 的 col3_raw；若不存在则用占位符填充）
+"""
 
 import os
 import h5py
@@ -9,22 +15,22 @@ import argparse
 from tqdm import tqdm
 
 CONFIG = {
-    "CSV": "/input.csv",
+    "CSV": "/input.tsv",
     "OUT": "/embedding.h5",
 
-   
+    # 仍保留列名匹配能力（匹配不到就按列位置 0/1/2 兜底）
     "ID_COL": "ID",   
     "SEQ_COL": "Window",      
     "COL3_COL": "lab",       
 
-    "COL3_PLACEHOLDER": "",  
+    "COL3_PLACEHOLDER": "",  # 第3列缺失时占位符（你也可以改成 "NA"）
 
     "MODEL_PATH": "/esm2_t36_3B_UR50D.pt",
     "MODEL_ID": "esm2_t36_3B_UR50D",
     "DEVICE": "cuda",
     "BATCH_SIZE": 8,
-    "LAYERS": "last4",       
-    "CENTER_INDEX": 15,      
+    "LAYERS": "last4",       # last / last4
+    "CENTER_INDEX": 15,      # 仅用于 mask 统计（若启用）
     "STORE_FP16": True,
     "SAVE_CLS": True,
     "SAVE_MASK_STATS": True,
